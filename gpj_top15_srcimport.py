@@ -301,7 +301,7 @@ def write_units(src_cur, dst_cur, db, mp, real=None):
             data.append((p, a1, _rate(r1), 0, 1))
         if a2 and a2 != bu and a2 != a1:
             data.append((p, a2, _rate(r2), 0, 2))
-        if a3 and a3 != bu and a3 != a1 and a2 and a3 != a2:
+        if a3 and a3 != bu and a3 != a1 and a3 != a2:
             data.append((p, a3, _rate(r3), 0, 3))
     dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_PtypeUnit WHERE 1=1")
     n = 0
