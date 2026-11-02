@@ -143,7 +143,7 @@
 | EMail / ROWINDEX / TopTotal | varchar(50)/int/numeric | 邮件 / 排序 / 每单优惠限额 |
 | isStop / updatetag / duty | int/int/varchar(100) | 停用 / 增量 / 职务 |
 | LowLimitDiscount | numeric(22,10) | 最低折扣下限 |
-| SaveMenid | UpFlag | int | 保存菜单 / 更新标志 |
+| SaveMenid / UpFlag | int | 保存菜单 / 更新标志 |
 
 ### 1.5 C1Type（旧版仓库表，14 列）— 本库仅存根节点
 
