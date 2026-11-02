@@ -3,12 +3,18 @@
 管家婆辉煌 TOP15 一键导入工具 - 源库直连引擎（v1.1 新增）
 读取已附加的千业商贸通源库（qysrc_ccc / qysrc_qys / qysrc_test 的 Bas* 表）：
   Bas四表(单位/商品/仓库/职员) → 级联数字化 → 官方存储过程逐行导入 HH15new
-  预设价格/条码/辅助单位/单位价格跟踪 → 批量直写
+  预设价格/条码/辅助单位/单位价格跟踪 → 批量直写（技能 §4B 已验证语义）
   期初库存 → 官方存储过程（p_hh_ModInitGoodsStocks_SNMng_Package）
 依赖：gpj_top15_core（复用 connect/call_*/backup/rollback/clear_localdata/import_sheet）
 """
 import os, sys, io, datetime
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    except Exception:
+        pass
 import gpj_top15_core as core
 
 SRC_SERVER = r'DESKTOP-8P5G8VQ\SQLEXPRESS'   # 千业软件后端实例（可读 E:\ 源库）
@@ -18,11 +24,41 @@ SRC_USER = 'sa'
 SRC_PWD = os.environ.get('GPJ_SRC_PWD', '')  # 发布版：从环境变量读取，不在源码明文保存
 SRC_DBS = {'CCC': 'qysrc_ccc', '千业测试': 'qysrc_qys', '测试': 'qysrc_test'}
 
-# 价格映射（源列 -> 目标 PRTypeId）；BasPTypePriceMx.IndexID -> PRTypeId
-PTYPE_COL_PR = [('SalePriceBasic', '0001'), ('SalePriceOne', '0002'), ('SalePriceTwo', '0003'),
-                ('SalePriceThree', '0004'), ('RecentPrice', '0005'), ('RecentPrice1', '0007'),
-                ('MinPrice', '0103')]
-PPM_INDEX_PR = {1: '0002', 2: '0003', 3: '0004', 8: '0001'}  # 预设售价1-3 / 零售价
+# 库存数量来源（关键业务口径）：
+#   StorageGoodsInfo = 当前结存（经全部进销单据后的实际库存，默认，导入新账套作为期初）
+#   StorageIniGoods  = 历史期初（仅在需要原样复制建账期初时使用）
+STOCK_SOURCE = 'StorageGoodsInfo'
+
+# BasPtypeInner 价格列 -> 目标 PRTypeId（仅保留生产库实际有数据的列；SalePriceOne/Two/Three、MinPrice 实测全空）
+INNER_COL_PR = [('SalePriceBasic', '0001'), ('RecentPrice', '0005'), ('RecentPrice1', '0007')]
+
+# 千业 BasPTypePriceMx 16 槽位 -> 管家婆 PRTypeId（按名称语义；系统价 0001 + 自定义门店价 0104-0118）
+# 依据：管家婆 xw_P_PriceType 已手工建 0104-0112（IsSystem=0），F_GetPriceInfo 以 IsSystem=0 动态读取
+PPM_FULL_MAP = {
+    1: ('0104', '魏庙够多多'), 2: ('0105', '蟠桃够多多'), 3: ('0106', '乔家湖'),
+    4: ('0107', '金客隆'), 5: ('0108', '开元华联'), 6: ('0109', '悦民坊'),
+    7: ('0110', '苏堤集市'), 8: ('0001', '零售价'), 9: ('0111', '双沟时代茂超市'),
+    10: ('0112', '现金价'), 11: ('0113', '预设售价'), 12: ('0114', '柳新佳佳购'),
+    13: ('0115', '鹿庄新一佳'), 14: ('0116', '丰县百亿超市'),
+    15: ('0117', '百亿招商场店'), 16: ('0118', '花语城直播基地'),
+}
+
+
+def ensure_custom_pricetypes(dst_cur):
+    """确保 xw_P_PriceType 含 16 方案所需全部价格类型：系统价跳过，自定义缺则插入
+    （IsSystem=0/IsVisible=1/IsEdit=1/IsSet=1，updatetag=10000），F_GetPriceInfo 自动动态取价"""
+    dst_cur.execute("SET NOCOUNT ON; SELECT PRTypeId FROM dbo.xw_P_PriceType")
+    have = {r[0] for r in dst_cur.fetchall()}
+    n = 0
+    for ix, (pr, name) in PPM_FULL_MAP.items():
+        if pr == '0001' or pr in have:
+            continue
+        dst_cur.execute("""SET NOCOUNT ON;
+INSERT INTO dbo.xw_P_PriceType
+ (PRTypeId,PRName,PRDisName,PRType,IsVisible,IsSystem,IsEdit,IsSet,Comment,URec,ParRec,USonnum,updatetag,Ordid,IsBaseVis)
+ VALUES (?,?,?,0,1,0,1,1,'',0,0,0,10000,'',1)""", pr, name, name)
+        n += 1
+    return n
 
 
 # ---------------- 级联数字化 ----------------
@@ -162,23 +198,37 @@ def build_goods_rows(src_cur, db, mp, bar_map):
 
 
 def build_stockini_rows(src_cur, db, mp_p, mp_k, name_p, name_k):
-    """期初库存：StorageIniGoods(BaseNo 引用) -> 官方过程行"""
-    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.StorageIniGoods WHERE Qty<>0 ORDER BY PtypeId, KtypeId" % db)
+    """库存结存：默认取 StorageGoodsInfo 当前结存（非历史期初；Qty<>0）-> 官方过程行
+    两表结构一致；STOCK_SOURCE 可切换为 StorageIniGoods 特殊场景"""
+    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.%s WHERE Qty<>0 ORDER BY PtypeId, KtypeId"
+                    % (db, STOCK_SOURCE))
     cols = [d[0] for d in src_cur.description]
     rows = []
+    sign_fixed = 0
     for rec in src_cur.fetchall():
         r = dict(zip(cols, rec))
         p = mp_p.get(int(r['PtypeId']), '')
         k = mp_k.get(int(r['KtypeId']), '')
         if not p or not k:
             continue
+        qty = float(r.get('Qty') or 0)
+        total = float(r.get('Total') or 0)
+        price = float(r.get('Price') or 0)
+        # 符号对齐：负库存 + 移动加权可能产生“数量与金额异号/负单价”，管家婆官方过程要求二者同号
+        # 以数量符号为准，按 |单价| 重算金额（边界数据，导入日志与文档会显式记录）
+        if qty and (qty > 0) != (total > 0):
+            base = abs(price) if price else (abs(total) / abs(qty) if total else 0.0)
+            total = qty * base
+            sign_fixed += 1
         rows.append({
             '商品编号': p, '商品全名': name_p.get(int(r['PtypeId']), ''),
             '仓库编号': k, '仓库全名': name_k.get(int(r['KtypeId']), ''),
-            '数量': r.get('Qty') or 0, '金额': r.get('Total') or 0,
+            '数量': qty, '金额': total,
             '批号': r.get('JobNumber') or '', '生产日期': r.get('OutFactoryDate') or '',
             '有效期至': '',
         })
+    if sign_fixed:
+        print('  [符号修正] 负库存异号成本对齐 %d 条（以数量符号重算金额，请核对）' % sign_fixed)
     return rows
 
 
@@ -222,11 +272,23 @@ def write_barcodes(src_cur, dst_cur, db, mp, real=None):
 
 
 def write_units(src_cur, dst_cur, db, mp, real=None):
-    """BasPtypeInner 基本/辅助单位 -> xw_PtypeUnit（URate=1 默认，Ordid=0/1/2/3）"""
-    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, BasicUnit, AssistUnitOne, AssistUnitTwo, AssistUnitThree FROM %s.dbo.BasPtypeInner WHERE BaseLevel>0" % db)
+    """BasPtypeInner 基本/辅助单位 -> xw_PtypeUnit（Ordid=0/1/2/3）
+    URate 取千业真实换算率列 PercentBasic/PercentOne/PercentTwo/PercentThree
+    （UpdateDB.sql 权威佐证：Percent*=UnitRate*，1 辅单位=URate 基本单位；0/NULL 回退 1）"""
+    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, BasicUnit, AssistUnitOne, AssistUnitTwo, AssistUnitThree,"
+                    " PercentBasic, PercentOne, PercentTwo, PercentThree"
+                    " FROM %s.dbo.BasPtypeInner WHERE BaseLevel>0" % db)
     rp = (real or {}).get('ptype', {})
     data = []
-    for bn, bu, a1, a2, a3 in src_cur.fetchall():
+
+    def _rate(v):
+        try:
+            x = float(v)
+            return x if x and x > 0 else 1.0
+        except (TypeError, ValueError):
+            return 1.0
+
+    for bn, bu, a1, a2, a3, pb, r1, r2, r3 in src_cur.fetchall():
         p = mp.get(int(bn), '')
         if not p:
             continue
@@ -234,13 +296,13 @@ def write_units(src_cur, dst_cur, db, mp, real=None):
         bu = (bu or '').strip()
         a1 = (a1 or '').strip(); a2 = (a2 or '').strip(); a3 = (a3 or '').strip()
         if bu:
-            data.append((p, bu, 1, 1, 0))
+            data.append((p, bu, _rate(pb), 1, 0))
         if a1 and a1 != bu:
-            data.append((p, a1, 1, 0, 1))
+            data.append((p, a1, _rate(r1), 0, 1))
         if a2 and a2 != bu and a2 != a1:
-            data.append((p, a2, 1, 0, 2))
-        if a3 and a3 != bu and a3 != a1 and a3 != a2:
-            data.append((p, a3, 1, 0, 3))
+            data.append((p, a2, _rate(r2), 0, 2))
+        if a3 and a3 != bu and a3 != a1 and a2 and a3 != a2:
+            data.append((p, a3, _rate(r3), 0, 3))
     dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_PtypeUnit WHERE 1=1")
     n = 0
     dst_cur.fast_executemany = True
@@ -254,41 +316,40 @@ def write_units(src_cur, dst_cur, db, mp, real=None):
 
 
 def write_prices(src_cur, dst_cur, db, mp, real=None):
-    """预设价格直写：
-    1) BasPtypeInner 价格列(SalePriceBasic/One/Two/Three/RecentPrice/RecentPrice1/MinPrice)
-       -> PRTypeId 0001/0002/0003/0004/0005/0007/0103
-    2) BasPTypePriceMx IndexID 1/2/3/8(预设售价1-3/零售价) -> 0002/0003/0004/0001
-    UnitID='0'；引用用官方过程实际树编号（real 反查）；DELETE 全表幂等"""
+    """预设价格完整 16 方案直写：
+    1) 自动补齐缺失的自定义价格类型（IsSystem=0，F_GetPriceInfo 动态读取）
+    2) BasPtypeInner：SalePriceBasic->0001 零售价 / RecentPrice->0005 最近进价 / RecentPrice1->0007 最近售价
+    3) BasPTypePriceMx 16 槽位 -> PPM_FULL_MAP（门店价/零售价，按名称语义）
+    UnitID='0'；引用用官方过程实际树编号（real 反查）；(PTypeId,PRTypeId) 去重；DELETE 全表幂等"""
+    nc = ensure_custom_pricetypes(dst_cur)
     rp = (real or {}).get('ptype', {})
-    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo FROM %s.dbo.BasPtypeInner WHERE BaseLevel>0 AND (%s)" %
-                    (db, ' OR '.join('%s<>0' % c for c, _ in PTYPE_COL_PR)))
-    ids = [rp.get(mp.get(int(r[0]), ''), '') for r in src_cur.fetchall()]
-    ids = [x for x in ids if x]
-    data = []
     seen = set()
-    if ids:
-        sel_cols = ', '.join(c for c, _ in PTYPE_COL_PR)
-        src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, %s FROM %s.dbo.BasPtypeInner WHERE BaseLevel>0" % (sel_cols, db))
-        for rec in src_cur.fetchall():
-            p = rp.get(mp.get(int(rec[0]), ''), '')
-            if not p:
-                continue
-            for (col, pr), val in zip(PTYPE_COL_PR, rec[1:]):
-                v = val if val is not None else 0
-                if v != 0 and (p, pr) not in seen:
-                    seen.add((p, pr))
-                    data.append((p, '0', pr, float(v)))
+    data = []
+    # 1) BasPtypeInner 价格列
+    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, SalePriceBasic, RecentPrice, RecentPrice1"
+                    " FROM %s.dbo.BasPtypeInner WHERE BaseLevel>0" % db)
+    for bn, spb, rcp, rp1 in src_cur.fetchall():
+        p = rp.get(mp.get(int(bn), ''), '')
+        if not p:
+            continue
+        for val, pr in [(spb, '0001'), (rcp, '0005'), (rp1, '0007')]:
+            v = float(val or 0)
+            if v != 0 and (p, pr) not in seen:
+                seen.add((p, pr))
+                data.append((p, '0', pr, v))
+    # 2) BasPTypePriceMx 16 槽位
     src_cur.execute("SET NOCOUNT ON; SELECT PTypeID, IndexID, AdvPrice FROM %s.dbo.BasPTypePriceMx WHERE AdvPrice<>0" % db)
     for pt, ix, adv in src_cur.fetchall():
         p = rp.get(mp.get(int(pt), ''), '')
-        pr = PPM_INDEX_PR.get(int(ix or 0))
-        if not p or not pr:
+        m = PPM_FULL_MAP.get(int(ix or 0))
+        if not p or not m:
             continue
-        key = (p, pr)
-        if key in seen:
+        pr = m[0]
+        if (p, pr) in seen:
             continue
-        seen.add(key)
+        seen.add((p, pr))
         data.append((p, '0', pr, float(adv)))
+    # 清空重写（幂等可重跑）
     dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_P_PtypePrice WHERE 1=1")
     n = 0
     dst_cur.fast_executemany = True
@@ -298,13 +359,13 @@ def write_prices(src_cur, dst_cur, db, mp, real=None):
             "SET NOCOUNT ON; INSERT INTO dbo.xw_P_PtypePrice (PTypeId, UnitID, PRTypeId, Price, UpDateDt, KeyId) VALUES (?,?,?,?,GETDATE(),NEWID())",
             chunk)
         n += len(chunk)
-    return n
+    return n, nc
 
 
 def write_pricefollow(src_cur, dst_cur, db, mp_p, mp_b, real=None):
     """price 表(千业客户价格) -> xw_P_PriceFollow：每条记录展开 4 行
     (0005 最近进价 / 0006 最近进货折扣 / 0007 最近售价 / 0008 最近销售折扣)，PPType=6
-    按 (ptypeid,btypeid) 去重；引用用官方过程实际树编号"""
+    按 (ptypeid,btypeid) 去重（源库 Units=-1/1 重复记录）；引用用官方过程实际树编号"""
     src_cur.execute("""
 SET NOCOUNT ON;
 SELECT ptypeid, btypeid,
@@ -339,18 +400,22 @@ FROM %s.dbo.price GROUP BY ptypeid, btypeid""" % db)
 # ---------------- 编排 ----------------
 def import_from_db(src_cur, dst_cur, db, modules, logcb):
     """源库直连一键导入：备份 → 四表官方过程 → 明细直写 → 期初库存官方过程 → 归位"""
+    # 1. 备份
     pre = core.backup_tables(dst_cur)
     logcb('INFO', '备份', 0, '已备份 9 张表（前缀 %s）' % pre)
     try:
+        # 2. 级联数字化
         logcb('INFO', '映射', 0, '级联数字化 Bas 编号...')
         mp_u = digi_map(src_cur, db, 'BasUnitTypeInner')
         mp_p = digi_map(src_cur, db, 'BasPtypeInner')
         mp_k = digi_map(src_cur, db, 'BasStockInner')
         mp_e = digi_map(src_cur, db, 'BasPersonInner')
+        # 默认条码映射（IsDefault=1 优先）
         src_cur.execute("SET NOCOUNT ON; SELECT PTypeID, BarCode, IndexID FROM %s.dbo.BasPTypeBarMx WHERE BarCode IS NOT NULL AND LTRIM(RTRIM(BarCode))<>'' ORDER BY IndexID" % db)
         bar_map = {}
         for pt, bc, ix in src_cur.fetchall():
             bar_map.setdefault(int(pt), bc.strip())
+        # 3. 四表官方过程（复用 core.import_sheet 通道与日志）
         resolver = core.ParentResolver(dst_cur)
         if 'unit' in modules:
             rows = build_unit_rows(src_cur, db, mp_u)
@@ -359,7 +424,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             logcb('INFO', 'unit', 0, '── 单位完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'warehouse' in modules:
             rows = build_warehouse_rows(src_cur, db, mp_k)
-            logcb('INFO', 'warehouse', 0, '── 开始导入仓库（%d 行）──' % len(rows))
+            logcb('INFO', 'warehouse', 0, '── 开始仓库（%d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'warehouse', rows, logcb, resolver)
             logcb('INFO', 'warehouse', 0, '── 仓库完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'employee' in modules:
@@ -372,6 +437,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             logcb('INFO', 'goods', 0, '── 开始导入商品（%d 行，价格/辅助单位/条码走直写）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'goods', rows, logcb, resolver)
             logcb('INFO', 'goods', 0, '── 商品完成：成功 %d，失败 %d ──' % (ok, fail))
+        # 4. 明细直写（引用官方过程实际树编号：pusercode 反查）
         real = resolve_real_ids(dst_cur)
         if 'barcode' in modules:
             n = write_barcodes(src_cur, dst_cur, db, mp_p, real)
@@ -380,11 +446,12 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             n = write_units(src_cur, dst_cur, db, mp_p, real)
             logcb('INFO', 'assistunit', 0, '辅助单位直写完成：%d 行' % n)
         if 'price' in modules:
-            n = write_prices(src_cur, dst_cur, db, mp_p, real)
-            logcb('INFO', 'price', 0, '预设价格直写完成：%d 行' % n)
+            n, nc = write_prices(src_cur, dst_cur, db, mp_p, real)
+            logcb('INFO', 'price', 0, '预设价格直写完成：%d 行（自动新建自定义价格类型 %d 个，共 16 方案）' % (n, nc))
         if 'pricefollow' in modules:
             n = write_pricefollow(src_cur, dst_cur, db, mp_p, mp_u, real)
             logcb('INFO', 'pricefollow', 0, '单位价格跟踪直写完成：%d 行' % n)
+        # 5. 期初库存（官方过程，依赖商品/仓库已导入）
         if 'stockini' in modules:
             name_p = {}
             name_k = {}
@@ -398,11 +465,13 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             logcb('INFO', 'stockini', 0, '── 开始导入期初库存（%d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'stockini', rows, logcb)
             logcb('INFO', 'stockini', 0, '── 期初库存完成：成功 %d，失败 %d ──' % (ok, fail))
+        # 6. 归位：主表 updatetag=10000 + xw_BaseUpdateTag=0（官方过程已自动维护，兜底执行）
         dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.btype SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.ptype SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.Stock SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.employee SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.xw_BaseUpdateTag SET UpdateTag=0")
+        # 6b. 单位拼音补齐：官方单位过程不维护 bnamepy，用库内 fn_GetPyCode 按全名补（客户端拼音检索）
         dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.btype SET bnamepy=dbo.fn_GetPyCode(bfullname)"
                         " WHERE leveal>0 AND (bnamepy IS NULL OR bnamepy='')")
         logcb('INFO', '归位', 0, 'updatetag 归位完成 + 单位拼音补齐（备份前缀 %s，可在管家婆内核对后回滚）' % pre)
@@ -425,7 +494,7 @@ def main(argv):
     src = core.connect(SRC_SERVER, db, SRC_USER, SRC_PWD)
     dst = core.connect(DST_SERVER, DST_DB, SRC_USER, SRC_PWD)
     print('源库 %s / 目标 %s.%s' % (db, DST_SERVER, DST_DB))
-    core.check_account(dst)
+    core.check_account(dst.cursor())
     import_from_db(src.cursor(), dst.cursor(), db, mods, logcb)
     src.close(); dst.close()
     print('完成。')
