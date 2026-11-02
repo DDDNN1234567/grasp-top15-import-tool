@@ -144,7 +144,7 @@ class App(tk.Tk):
         for i, m in enumerate(srcimp.MODULES):
             v = tk.BooleanVar(value=True)
             self.fwd_chk[m] = v
-            ttk.Checkbutton(frm, text=srcimp.MODULE_CN[m], variable=v).grid(
+            ttk.Checkbutton(frm_mod, text=srcimp.MODULE_CN[m], variable=v).grid(
                 row=i // 5, column=i % 5, sticky='w', padx=6, pady=3)
 
         row_act = ttk.Frame(f); row_act.pack(fill='x', padx=6, pady=4)
@@ -347,7 +347,7 @@ class App(tk.Tk):
 
         def worker():
             cn = panel.connect()
-            pre = core.backup_tables(cursor())
+            pre = core.backup_tables(cn.cursor())
             cn.close()
             self.var_roll.set(pre)
             self.log('INFO', '备份', 0, '已备份 9 表，前缀 %s' % pre)
