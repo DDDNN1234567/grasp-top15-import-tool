@@ -48,7 +48,7 @@ ALL_COLS = {
 
 # 官方模板表头（含前导行说明时会跳过）
 TEMPLATE_SAMPLE = {
-    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '零售价'],
+    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '', '零售价'],
     '仓库': ['00000', '示例001', '示例仓库', '仓库', '', '', '', ''],
     '商品': ['00000', '示例001', '示例商品', '商品', '', '', '', '0', '', '', '', '', '', '', '', '件', '690000000001', '10', '12', '13', '14', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
     '职员': ['00000', '示例001', '示例职员', '', '', '', '', '', '', ''],
@@ -221,7 +221,9 @@ def _extract(rows, sheetname):
     """定位表头行并返回 (header, [行dict])；找不到返回 (None, None)"""
     target_cols = ALL_COLS.get(SHEETS.get(sheetname), [])
     if not target_cols:
+        # 非目标 sheet 直接忽略
         return None, None
+    # 找含 '编号' 且与目标列交集≥2 的行作表头
     for idx, row in enumerate(rows):
         hdr = [_norm(x) for x in row]
         inter = [h for h in hdr if h in target_cols]
@@ -236,6 +238,7 @@ def _extract(rows, sheetname):
                     if h:
                         v = r[c] if c < len(r) else ''
                         d[h] = v
+                # 跳过模板示例行（编号列含“示例”）
                 code_key = {'unit': '单位编号', 'warehouse': '仓库编号', 'goods': '商品编号',
                             'employee': '职员编号', 'stockini': '商品编号', 'pricefollow': '单位编号'}.get(SHEETS.get(sheetname), '')
                 if code_key in d and '示例' in str(d[code_key]):
@@ -270,7 +273,7 @@ EXEC @rc = dbo.p_hh_BasicInsertB_Commodity @Parid=?,@FullName=?,@UserCode=?,@Nam
   @BankAccounts=?,@TaxNo=?,@Artotal00=?,@Aptotal00=?,@YRTotal00=?,@YPTotal00=?,@ArUp=?,@ApUp=?,
   @skqx=?,@Comment=?,@ChangeDay=?,@ChangeRate=?,@EMail=?,@definputCode=?,@areatypeCode=?,
   @gatherbtypecode=?,@prtypeid=?,@RltTypeID=@rt OUTPUT,@errorValue=@err OUTPUT;
-SELECT @rc,@rt,@err;",
+SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, name, namepy, address, tel, tel2, mophone, fax, postcode,
         person, person2, bank, bankacct, taxno, art00, apt00, yrt00, ypt00, arup, apup, skqx,
         comment, changeday, changerate, email, definput, areatype, gatherbtype, prtypeid)
@@ -283,7 +286,7 @@ SET NOCOUNT ON;
 DECLARE @rt varchar(50), @err varchar(50); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_BasicInsertK_Commodity @parid=?,@fullname=?,@usercode=?,@name=?,@namepy=?,
   @comment=?,@Address=?,@Person=?,@Tel=?,@rlttypeid=@rt OUTPUT,@errorValue=@err OUTPUT;
-SELECT @rc,@rt,@err;",
+SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, name, namepy, comment, address, person, tel)
     return cur.fetchone()
 
@@ -308,7 +311,7 @@ EXEC @rc = dbo.p_hh_BascInsertP_Commodity @Parid=?,@FullName=?,@UserCode=?,@Name
   @pgManCode=?,@snManCode=?,@kwManCode=?,@Pgholunit=?,@Pgholunitrate=?,@defaulttax=?,@allowprice=?,
   @pjobmancode=?,@sourcewayzz=?,@sourcewayzzDay=?,@sourcewaywg=?,@sourcewaywgDay=?,@sourcewayww=?,
   @sourcewaywwDay=?,@RltTypeID=@rt OUTPUT,@errorValue=@err OUTPUT;
-SELECT @rc,@rt,@err;",
+SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, name, namepy, typ, standard, area, costmode, ptypetype,
         pooldisc, btypecode, ppcode, isweight, lifeday, comment, unit, ucode, saleprice, pre1,
         pre2, pre3, sendprice, buydiscprice, lowsaleprice, unit1, unitrate1, ucode1, u1saleprice,
@@ -326,7 +329,7 @@ DECLARE @rt varchar(50), @err varchar(250); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_BasicInsertE_Commodity @parid=?,@fullname=?,@usercode=?,@namepy=?,@Birthday=?,
   @Tel=?,@duty=?,@Address=?,@LowLimitDiscount=?,@TopTotal=?,@eComment=?,@rlttypeid=@rt OUTPUT,
   @errorValue=@err OUTPUT;
-SELECT @rc,@rt,@err;",
+SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, namepy, birthday, tel, duty, address, lowdisc, toptotal, ecomment)
     return cur.fetchone()
 
@@ -338,7 +341,7 @@ DECLARE @oid int, @err varchar(250); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_ModInitGoodsStocks_SNMng_Package @szptypeid=?,@szPUserCode=?,@szktypeid=?,
   @szKUserCode=?,@szslFullname='',@szslUserCode='',@dQty=?,@dTotal=?,@JobNumber=?,@CreateDate=?,
   @UserEndDate=?,@SideQty='',@szSnNo='',@OrderID=@oid OUTPUT,@errorValue=@err OUTPUT;
-SELECT @rc,@oid,@err;",
+SELECT @rc,@oid,@err;""",
         ptypeid, puser, ktypeid, kuser, qty, total, jobno, createdate, userend)
     return cur.fetchone()
 
@@ -351,7 +354,7 @@ DECLARE @oid int, @err varchar(250); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_ImportPtypePriceGZ @szbtypeid=?,@szbfullname=?,@szptypeid=?,@szpfullname=?,
   @punit=?,@buyPrice=?,@salePrice=?,@buyDiscount=?,@saleDisCount=?,@OrderID=@oid OUTPUT,
   @errorValue=@err OUTPUT;
-SELECT @rc,@oid,@err;",
+SELECT @rc,@oid,@err;""",
         btypeid, bfull, ptypeid, pfull, punit, buyprice, saleprice, buydisc, saledisc)
     return cur.fetchone()
 
@@ -388,6 +391,7 @@ class ParentResolver:
         d = self.maps[module]
         if code in d:
             return d[code]
+        # 查库（自定义编号 -> 树编号）
         t = {'unit': ('btype', 'busercode', 'btypeid'),
              'warehouse': ('Stock', 'kusercode', 'ktypeid'),
              'goods': ('ptype', 'pusercode', 'ptypeid')}[module]
@@ -408,7 +412,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
     ok_n, fail_n, fails = 0, 0, []
     total = len(rows)
     for i, row in enumerate(rows):
-        ln = i + 2
+        ln = i + 2  # 表头占 1 行，数据从第 2 行起（跳过说明行后按实际行号）
         try:
             rc, out, err = None, None, None
             if module == 'unit':
@@ -487,7 +491,8 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
 
 def orchestrate(cur, files, modules, logcb):
     """一键导入编排：备份 → 按依赖顺序导入所选模块"""
-    data = {}
+    # 解析 Excel
+    data = {}  # module -> (header, rows)
     for f in files:
         try:
             sheets = read_excel(f)
@@ -502,6 +507,7 @@ def orchestrate(cur, files, modules, logcb):
     if not data:
         logcb('FAIL', '文件', 0, '未从所选 Excel 中识别到任何目标 sheet（单位/商品/仓库/职员/库存信息/单位价格跟踪）')
         return
+    # 列校验
     for m in modules:
         if m not in data:
             logcb('WARN', m, 0, '缺少 %s 数据，跳过' % MODULE_NAMES[m])
@@ -512,12 +518,14 @@ def orchestrate(cur, files, modules, logcb):
             data.pop(m)
     if not data:
         return
+    # 备份
     try:
         pre = backup_tables(cur)
         logcb('INFO', '备份', 0, '已备份 9 张表（前缀 %s）' % pre)
     except Exception as e:
         logcb('FAIL', '备份', 0, '备份失败：%s，已中止导入' % e)
         return
+    # 按依赖顺序导入
     total_ok = total_fail = 0
     resolver = ParentResolver(cur)
     for m in MODULE_ORDER:
