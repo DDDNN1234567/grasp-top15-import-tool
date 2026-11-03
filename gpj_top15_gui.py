@@ -32,7 +32,7 @@ C_GREEN = '#2E7D32'
 C_RED = '#C62828'
 FONT_TITLE = ('Microsoft YaHei UI', 15, 'bold')
 FONT_H = ('Microsoft YaHei UI', 10, 'bold')
-FONT_BODY = ('Microsoft YaHei UI', 9)
+FONT_BODY = ('Microsoft YaHei', 9)
 FONT_MONO = ('Consolas', 9)
 
 # ---------------- 帮助文本（集中管理） ----------------
@@ -599,7 +599,7 @@ class App(tk.Tk):
                     sc.execute("SELECT COUNT(*) FROM dbo.%s" % t)
                     x = sc.fetchone()[0]
                     dc.execute("SELECT COUNT(*) FROM dbo.%s" % t)
-                    y = sc.fetchone()[0]
+                    y = dc.fetchone()[0]
                     mark = '✓' if x == y else '≠'
                     self.log('INFO' if x == y else 'WARN', '对比', 0,
                              '%s %s：%d → %d %s' % (mark, t, x, y, mark))
@@ -609,9 +609,9 @@ class App(tk.Tk):
                 sc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
                 sx = set(r[0] for r in sc.fetchall())
                 dc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
-                dx = set(r[0] for r in sc.fetchall())
+                dx = set(r[0] for r in dc.fetchall())
                 self.log('INFO', '对比', 0, '商品 BaseNo：源独有 %d（待新增），目标独有 %d，共有 %d' %
-                         (len(sx - dx), len(dx - dx), len(sx & dx)))
+                         (len(sx - dx), len(dx - sx), len(sx & dx)))
             except Exception as e:
                 self.log('WARN', '对比', 0, 'BaseNo 差异跳过：%s' % e)
             s.close(); d.close()
