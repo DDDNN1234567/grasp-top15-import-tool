@@ -123,11 +123,12 @@ def check_account(cur):
 
 # ---------------- 备份 / 回滚 ----------------
 BAK_TABLES = ['btype', 'ptype', 'Stock', 'employee', 'IniGoodsStocks',
-              'xw_P_PriceFollow', 'xw_P_PtypePrice', 'xw_PtypeUnit', 'xw_PtypeBarCode']
+              'xw_P_PriceFollow', 'xw_P_PtypePrice', 'xw_PtypeUnit', 'xw_PtypeBarCode',
+              'Commission', 'IniCommission', 'lendborrow', 'lendborrow00']
 
 
 def backup_tables(cur):
-    """SELECT INTO 备份 9 表，返回备份前缀"""
+    """SELECT INTO 备份核心表（含委托/受托、借进/借出业务表），返回备份前缀"""
     stamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
     pre = '_impbak_' + stamp
     for t in BAK_TABLES:
@@ -521,7 +522,7 @@ def orchestrate(cur, files, modules, logcb):
     # 备份
     try:
         pre = backup_tables(cur)
-        logcb('INFO', '备份', 0, '已备份 9 张表（前缀 %s）' % pre)
+        logcb('INFO', '备份', 0, '已备份 %d 张表（前缀 %s）' % (len(BAK_TABLES), pre))
     except Exception as e:
         logcb('FAIL', '备份', 0, '备份失败：%s，已中止导入' % e)
         return
