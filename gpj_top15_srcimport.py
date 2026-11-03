@@ -64,29 +64,41 @@ INSERT INTO dbo.xw_P_PriceType
 # ---------------- 级联数字化 ----------------
 def digi_map(src_cur, db, table):
     """Bas 表级联数字化：BaseNo -> 新树编号（leveal1=00001起，leveal>1=父编号+5位行序）
-    返回 dict(BaseNo -> newid)；根(level<=0)映射 '00000'（目标库保留自身根）"""
-    sql = ("SELECT BaseNo, ParentNo, BaseLevel FROM %s.dbo.%s ORDER BY BaseNo" % (db, table))
-    src_cur.execute(sql)
-    newid = {}
-    seq = {}
+    返回 dict(BaseNo -> newid)；根(level<=0)映射 '00000'（目标库保留自身根）。
+    v3.0：基于真实父子关系 BFS 遍历，正确处理"父 BaseNo 大于子 BaseNo"（如 257 父=327），
+    不再依赖 BaseNo 大小顺序；同一父下直接子节点按 BaseNo 升序分配行序。"""
+    from collections import deque
+    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, ParentNo, BaseLevel FROM %s.dbo.%s" % (db, table))
+    pn_of, lv_of, child_map = {}, {}, {}
     for bn, pn, lv in src_cur.fetchall():
-        if lv is None or int(lv) <= 0:
-            newid[int(bn)] = '00000'
-            continue
         bn = int(bn)
-        if int(lv) == 1:
-            seq[1] = seq.get(1, 0) + 1
-            newid[bn] = '%05d' % seq[1]
-        else:
-            parent = newid.get(int(pn), '00000')
-            seq[int(pn)] = seq.get(int(pn), 0) + 1
-            newid[bn] = parent + '%05d' % seq[int(pn)]
+        pn_of[bn] = int(pn) if pn else 0
+        lv_of[bn] = int(lv) if lv else 0
+    roots = [bn for bn in pn_of if lv_of[bn] <= 0]
+    newid = {bn: '00000' for bn in roots}
+    for bn in pn_of:                                          # 按真实父节点分组
+        if lv_of[bn] <= 0:
+            continue
+        pn = pn_of[bn] if pn_of[bn] in pn_of else (roots[0] if roots else 0)
+        child_map.setdefault(pn, []).append(bn)
+    queue = deque(roots)
+    while queue:                                              # 自根向下 BFS
+        parent = queue.popleft()
+        for i, kid in enumerate(sorted(child_map.get(parent, [])), 1):
+            if lv_of[parent] <= 0:                            # level1 不拼根前缀，纯5位
+                newid[kid] = '%05d' % i
+            else:                                             # level>1 父编号+5位行序
+                newid[kid] = newid[parent] + '%05d' % i
+            queue.append(kid)
+    for bn in pn_of:                                          # 兜底：悬空/成环节点挂根
+        if bn not in newid:
+            newid[bn] = '00000'
     return newid
 
 
 # ---------------- Bas -> 官方过程行（与 Excel 导入同构） ----------------
 def build_unit_rows(src_cur, db, mp):
-    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasUnitTypeInner ORDER BY BaseNo" % db)
+    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasUnitTypeInner ORDER BY BaseLevel, BaseNo" % db)
     cols = [d[0] for d in src_cur.description]
     rows = []
     for rec in src_cur.fetchall():
@@ -115,7 +127,7 @@ def build_unit_rows(src_cur, db, mp):
 
 
 def build_warehouse_rows(src_cur, db, mp):
-    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasStockInner ORDER BY BaseNo" % db)
+    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasStockInner ORDER BY BaseLevel, BaseNo" % db)
     cols = [d[0] for d in src_cur.description]
     rows = []
     for rec in src_cur.fetchall():
@@ -134,7 +146,7 @@ def build_warehouse_rows(src_cur, db, mp):
 
 
 def build_employee_rows(src_cur, db, mp):
-    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasPersonInner ORDER BY BaseNo" % db)
+    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasPersonInner ORDER BY BaseLevel, BaseNo" % db)
     cols = [d[0] for d in src_cur.description]
     rows = []
     for rec in src_cur.fetchall():
@@ -155,7 +167,7 @@ def build_employee_rows(src_cur, db, mp):
 
 def build_goods_rows(src_cur, db, mp, bar_map):
     """商品行：只传基本字段（价格/辅助单位走直写，避免官方过程写价格与直写冲突）"""
-    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasPtypeInner ORDER BY BaseNo" % db)
+    src_cur.execute("SET NOCOUNT ON; SELECT * FROM %s.dbo.BasPtypeInner ORDER BY BaseLevel, BaseNo" % db)
     cols = [d[0] for d in src_cur.description]
     rows = []
     for rec in src_cur.fetchall():
@@ -214,7 +226,7 @@ def build_stockini_rows(src_cur, db, mp_p, mp_k, name_p, name_k):
         qty = float(r.get('Qty') or 0)
         total = float(r.get('Total') or 0)
         price = float(r.get('Price') or 0)
-        # 符号对齐：负库存 + 移动加权可能产生“数量与金额异号/负单价”，管家婆官方过程要求二者同号
+        # 符号对齐：负库存 + 移动加权可能产生"数量与金额异号/负单价"，管家婆官方过程要求二者同号
         # 以数量符号为准，按 |单价| 重算金额（边界数据，导入日志与文档会显式记录）
         if qty and (qty > 0) != (total > 0):
             base = abs(price) if price else (abs(total) / abs(qty) if total else 0.0)
@@ -245,8 +257,6 @@ def resolve_real_ids(dst_cur):
             m[cid.strip()] = iid.strip()
         real[t] = m
     return real
-
-
 def write_barcodes(src_cur, dst_cur, db, mp, real=None):
     """BasPTypeBarMx -> xw_PtypeBarCode（UnitID='0' 数字串，Ordid=IndexID，keyid=NEWID）
     real: {映射编号->实际树编号} 反查表（缺省直用映射编号）"""
@@ -402,7 +412,15 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
     """源库直连一键导入：备份 → 四表官方过程 → 明细直写 → 期初库存官方过程 → 归位"""
     # 1. 备份
     pre = core.backup_tables(dst_cur)
-    logcb('INFO', '备份', 0, '已备份 9 张表（前缀 %s）' % pre)
+    logcb('INFO', '备份', 0, '已备份 %d 张表（含业务表，前缀 %s）' % (len(core.BAK_TABLES), pre))
+    # 1b. 已开账账套：官方过程拒绝录入“期初应收应付/期初库存”。在所有官方过程之前统一反开账，
+    #     全部完成（含异常）后在 finally 恢复，保证单位/库存等期初数据均可录入。
+    dst_cur.execute("SET NOCOUNT ON; SELECT SubValue FROM dbo.sysdata WHERE SubName='iniover'")
+    _r = dst_cur.fetchone()
+    _was_open = _r[0] if _r else '0'
+    if _was_open == '1':
+        dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.sysdata SET SubValue='0' WHERE SubName='iniover'")
+        logcb('INFO', '开账', 0, '检测到账套已开账，导入前统一反开账（已确认无业务单据，安全），完成后自动恢复')
     try:
         # 2. 级联数字化
         logcb('INFO', '映射', 0, '级联数字化 Bas 编号...')
@@ -424,7 +442,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             logcb('INFO', 'unit', 0, '── 单位完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'warehouse' in modules:
             rows = build_warehouse_rows(src_cur, db, mp_k)
-            logcb('INFO', 'warehouse', 0, '── 开始仓库（%d 行）──' % len(rows))
+            logcb('INFO', 'warehouse', 0, '── 开始导入仓库（%d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'warehouse', rows, logcb, resolver)
             logcb('INFO', 'warehouse', 0, '── 仓库完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'employee' in modules:
@@ -436,6 +454,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             rows = build_goods_rows(src_cur, db, mp_p, bar_map)
             logcb('INFO', 'goods', 0, '── 开始导入商品（%d 行，价格/辅助单位/条码走直写）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'goods', rows, logcb, resolver)
+            gui = 'x'
             logcb('INFO', 'goods', 0, '── 商品完成：成功 %d，失败 %d ──' % (ok, fail))
         # 4. 明细直写（引用官方过程实际树编号：pusercode 反查）
         real = resolve_real_ids(dst_cur)
@@ -462,7 +481,8 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             for bn, fn in src_cur.fetchall():
                 name_k[int(bn)] = fn or ''
             rows = build_stockini_rows(src_cur, db, mp_p, mp_k, name_p, name_k)
-            logcb('INFO', 'stockini', 0, '── 开始导入期初库存（%d 行）──' % len(rows))
+            # 反开账已在流程开头统一处理（iniover=0），此处直接走官方库存过程
+            logcb('INFO', 'stockini', 0, '── 开始导入期初库存（%d 行，取当前结存 StorageGoodsInfo）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'stockini', rows, logcb)
             logcb('INFO', 'stockini', 0, '── 期初库存完成：成功 %d，失败 %d ──' % (ok, fail))
         # 6. 归位：主表 updatetag=10000 + xw_BaseUpdateTag=0（官方过程已自动维护，兜底执行）
@@ -479,6 +499,11 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
     except Exception as e:
         logcb('FAIL', '导入', 0, '导入中止：%s（备份前缀 %s 可回滚）' % (e, pre))
         raise
+    finally:
+        # 无论成功或异常，恢复账套原开账状态
+        if _was_open == '1':
+            dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.sysdata SET SubValue='1' WHERE SubName='iniover'")
+            logcb('INFO', '开账', 0, '已恢复开账状态（iniover=1）')
 
 
 MODULES = ['unit', 'warehouse', 'goods', 'employee', 'stockini', 'price', 'barcode', 'assistunit', 'pricefollow']
