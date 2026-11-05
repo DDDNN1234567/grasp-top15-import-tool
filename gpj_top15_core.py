@@ -48,7 +48,7 @@ ALL_COLS = {
 
 # 官方模板表头（含前导行说明时会跳过）
 TEMPLATE_SAMPLE = {
-    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '', '零售价'],
+    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '零售价'],
     '仓库': ['00000', '示例001', '示例仓库', '仓库', '', '', '', ''],
     '商品': ['00000', '示例001', '示例商品', '商品', '', '', '', '0', '', '', '', '', '', '', '', '件', '690000000001', '10', '12', '13', '14', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
     '职员': ['00000', '示例001', '示例职员', '', '', '', '', '', '', ''],
@@ -458,7 +458,7 @@ def _extract(rows, sheetname):
                     if h:
                         v = r[c] if c < len(r) else ''
                         d[h] = v
-                # 跳过模板示例行（编号列含“示例”）
+                # 跳过模板示例行（编号含“示例”）
                 code_key = {'unit': '单位编号', 'warehouse': '仓库编号', 'goods': '商品编号',
                             'employee': '职员编号', 'stockini': '商品编号', 'pricefollow': '单位编号'}.get(SHEETS.get(sheetname), '')
                 if code_key in d and '示例' in str(d[code_key]):
@@ -535,7 +535,7 @@ SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, name, namepy, typ, standard, area, costmode, ptypetype,
         pooldisc, btypecode, ppcode, isweight, lifeday, comment, unit, ucode, saleprice, pre1,
         pre2, pre3, sendprice, buydiscprice, lowsaleprice, unit1, unitrate1, ucode1, u1saleprice,
-        u1pre1, u1pre2, u1pre3, unit2, unitrate2, ucode2, u2pre1, u2pre2, u2pre3,
+        u1pre1, u1pre2, u1pre3, unit2, unitrate2, ucode2, u2saleprice, u2pre1, u2pre2, u2pre3,
         sideunit, pgmancode, snmancode, kwmancode, pgholunit, pgholunitrate, defaulttax,
         allowprice, pjobmancode, swzz, swzzday, swwg, swwgday, swww, swwwday)
     return cur.fetchone()
@@ -725,7 +725,7 @@ def orchestrate(cur, files, modules, logcb):
                 data[m] = (hdr, rows)
                 logcb('INFO', '文件', 0, '%s：%s sheet %d 行' % (os.path.basename(f), sheetname, len(rows)))
     if not data:
-        logcb('FAIL', '文件', 0, '未从所选 Excel中识别到任何目标 sheet（单位/商品/仓库/职员/库存信息/单位价格跟踪）')
+        logcb('FAIL', '文件', 0, '未从所选 Excel 中识别到任何目标 sheet（单位/商品/仓库/职员/库存信息/单位价格跟踪）')
         return
     # 列校验
     for m in modules:
