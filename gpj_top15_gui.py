@@ -747,7 +747,7 @@ class App(tk.Tk):
                     self.log('INFO' if x == y else 'WARN', '对比', 0,
                              '%s %s：%d → %d %s' % (mark, t, x, y, mark))
                 except Exception as e:
-                    self.log('WARN', '对比', 0, '%s 跳过：%s' % t, e)
+                    self.log('WARN', '对比', 0, '%s 跳过：%s' % (t, e))
             try:
                 sc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
                 sx = set(r[0] for r in sc.fetchall())
