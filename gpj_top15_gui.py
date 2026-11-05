@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-管家婆辉煌 TOP15 双向直导工具 v3.0（GUI）
+管家婆辉煌 TOP15 双向直导工具 v3.1（GUI）
 
-设计目标（针对 v2.0 实机验收反馈）：
-  ① 零预填：所有连接参数（服务器/数据库/用户/密码）初始全部留空，由用户按实际环境填写，不内置任何实例/账套。
-  ② 每个功能按钮旁配“?”帮助按钮，点击弹出该功能的用途、前置条件与操作说明。
-  ③ 步骤引导式：每个页签内以“第 1 步 / 第 2 步 …”卡片组织，按顺序操作即可。
-  ④ 功能融合 + 界面美化：统一专业配色、卡片式布局、清晰字体层级，去掉难理解的零散堆砌。
+v3.1 增强：
+  ① 数据库下拉手工选择（连接后枚举在线库，可下拉也可手填）+ 刷新库。
+  ② .mdf/.ldf 自动附加向导（选文件→自动 ATTACH→校验 Bas→设为源库，免人工）。
+  ③ 增量同步选项（源独有新增/共有更新/目标独有保留）。
+  ④ 维护页连接与操作融合，一键回滚最近备份（回滚前预检）。
+沿用 v3.0：零预填、按钮“?”帮助、步骤引导卡片、专业配色与卡片式布局。
 四个页签：
   1. Excel 导入   2. 千业→管家婆（正向）   3. 管家婆→千业（反向）   4. 维护工具
 所有耗时任务走独立线程 + 独立连接，全局 busy 锁，线程安全日志。
@@ -32,7 +33,7 @@ C_GREEN = '#2E7D32'
 C_RED = '#C62828'
 FONT_TITLE = ('Microsoft YaHei UI', 15, 'bold')
 FONT_H = ('Microsoft YaHei UI', 10, 'bold')
-FONT_BODY = ('Microsoft YaHei', 9)
+FONT_BODY = ('Microsoft YaHei UI', 9)
 FONT_MONO = ('Consolas', 9)
 
 # ---------------- 帮助文本（集中管理） ----------------
@@ -97,6 +98,16 @@ HELP = {
     'compare': ('差异对比',
                 '只读对比源库与目标库核心表的行数，以及商品 BaseNo 集合差异。\n'
                 '用于增量同步前发现“源独有/目标独有/共有”的商品，不修改任何数据。'),
+    'attach': ('自动附加 .mdf/.ldf',
+               '把千业管理通的数据库物理文件（.mdf 主文件，.ldf 日志可选）自动附加到 SQL Server，无需手工操作。\n\n'
+               '1) 选择 .mdf（.ldf 可不选，SQL Server 会自动重建日志）；\n'
+               '2) 填写新库名（留空则用文件名）；\n'
+               '3) 点“自动附加并设为源库”，工具自动 ATTACH、校验千业 Bas 结构，并把库名填入上方源连接。\n'
+               '注意：高版本文件不能附加到低版本实例；文件被占用时请先关闭千业软件。'),
+    'incremental': ('增量同步',
+                    '勾选后按 BaseNo/usercode 集合差异同步，不再全量重建：\n'
+                    '· 源独有 → 新增；共有 → 更新名称/联系/备注；目标独有 → 保留不删。\n'
+                    '不勾选则为全量模式（清空后重建，与旧版一致）。'),
 }
 
 
@@ -178,8 +189,12 @@ class ConnPanel(ttk.LabelFrame):
             row=0, column=1, sticky='w', padx=4)
         ttk.Label(self, text='数据库', style='Card.TLabel').grid(
             row=0, column=2, sticky='e', padx=(10, 4))
-        ttk.Entry(self, textvariable=self.var_db, width=16).grid(
-            row=0, column=3, sticky='w', padx=4)
+        # 可编辑下拉：连接后从服务器枚举在线数据库，也可手工输入
+        self.cmb_db = ttk.Combobox(self, textvariable=self.var_db, width=18,
+                                   values=[], state='normal')
+        self.cmb_db.grid(row=0, column=3, sticky='w', padx=4)
+        ttk.Button(self, text='刷新库', width=6, command=self.load_databases).grid(
+            row=0, column=4, sticky='w', padx=(2, 4))
         # 第 2 行：用户名 / 密码 / 测试 / 帮助
         ttk.Label(self, text='用户名', style='Card.TLabel').grid(
             row=1, column=0, sticky='e', padx=(8, 4), pady=(0, 6))
@@ -197,16 +212,36 @@ class ConnPanel(ttk.LabelFrame):
         return core.connect(self.var_server.get().strip(), self.var_db.get().strip(),
                             self.var_user.get().strip(), self.var_pwd.get())
 
+    def load_databases(self):
+        """连接 master 枚举在线数据库，填充下拉（保留手工输入）"""
+        if not self.var_server.get().strip():
+            messagebox.showwarning('提示', '请先填写服务器实例')
+            return
+        try:
+            dbs = core.list_databases(self.var_server.get().strip(),
+                                      self.var_user.get().strip(), self.var_pwd.get())
+            self.cmb_db['values'] = dbs
+            self.app.log('INFO', '连接', 0, '已枚举 %d 个在线数据库（可下拉选择或手工输入）' % len(dbs))
+            return dbs
+        except Exception as e:
+            self.app.log('FAIL', '连接', 0, '枚举数据库失败：%s' % e)
+            messagebox.showerror('枚举失败', str(e))
+            return []
+
     def test(self):
         if not self.var_server.get().strip():
             messagebox.showwarning('提示', '请先填写服务器实例')
             return
         try:
+            # 先枚举数据库（不依赖具体库名，便于尚未选库时也能测试）
+            dbs = self.load_databases()
             cn = self.connect()
             ver, ed = core.server_version(cn.cursor())
             cn.close()
             self.app.log('INFO', '连接', 0, '%s 连接成功：%s（%s）' % (self.var_db.get(), ver, ed))
-            messagebox.showinfo('连接成功', '%s\nSQL Server %s（%s）' % (self.var_db.get(), ver, ed))
+            messagebox.showinfo('连接成功',
+                                '%s\nSQL Server %s（%s）\n\n已加载 %d 个数据库，可从下拉菜单选择'
+                                % (self.var_db.get(), ver, ed, len(dbs)))
         except Exception as e:
             self.app.log('FAIL', '连接', 0, '%s 连接失败：%s' % (self.var_db.get(), e))
             messagebox.showerror('连接失败', str(e))
@@ -215,7 +250,7 @@ class ConnPanel(ttk.LabelFrame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('管家婆辉煌 TOP15 双向直导工具 v3.0')
+        self.title('管家婆辉煌 TOP15 双向直导工具 v3.1')
         self.geometry('1060x820')
         self.minsize(960, 700)
         self.log_q = queue.Queue()
@@ -320,6 +355,30 @@ class App(tk.Tk):
         self.fwd_dst = ConnPanel(f, '第 2 步 · 目标：管家婆标准账套', self)
         self.fwd_dst.pack(fill='x', padx=6, pady=(0, 6))
 
+        # 可选：.mdf/.ldf 自动附加向导（无需手工附加）
+        acard = ttk.LabelFrame(f, text=' 可选 · .mdf/.ldf 自动附加向导（选文件→自动附加→自动设为源库） ')
+        acard.pack(fill='x', padx=6, pady=(0, 6))
+        self.var_mdf = tk.StringVar()
+        self.var_ldf = tk.StringVar()
+        self.var_newdb = tk.StringVar()
+        ar1 = ttk.Frame(acard)
+        ar1.pack(anchor='w', padx=10, pady=(8, 2))
+        ttk.Button(ar1, text='选择 .mdf 主文件…', width=16, command=self.pick_mdf).pack(side='left')
+        ttk.Label(acard, textvariable=self.var_mdf, style='Muted.Card.TLabel').pack(anchor='w', padx=10)
+        ar2 = ttk.Frame(acard)
+        ar2.pack(anchor='w', padx=10, pady=(4, 2))
+        ttk.Button(ar2, text='选择 .ldf 日志(可选)', width=16, command=self.pick_ldf).pack(side='left')
+        ttk.Label(acard, textvariable=self.var_ldf, style='Muted.Card.TLabel').pack(anchor='w', padx=10)
+        ar3 = ttk.Frame(acard)
+        ar3.pack(anchor='w', padx=10, pady=4)
+        ttk.Label(ar3, text='附加为新库名(留空取文件名)：').pack(side='left')
+        ttk.Entry(ar3, textvariable=self.var_newdb, width=18).pack(side='left', padx=4)
+        ar4 = ttk.Frame(acard)
+        ar4.pack(anchor='w', padx=10, pady=(0, 10))
+        self._track(ttk.Button(ar4, text='★ 自动附加并设为源库', style='Primary.TButton',
+                               command=self.do_attach)).pack(side='left', padx=3)
+        HelpButton(ar4, 'attach').pack(side='left')
+
         card = self._card(f)
         StepHeader(card, 3, '勾选同步模块', '默认全部，可按需取消').pack(anchor='w', padx=8, pady=(6, 0))
         hb = ttk.Frame(card, style='Card.TFrame')
@@ -338,7 +397,11 @@ class App(tk.Tk):
         ra.pack(anchor='w', padx=10, pady=(2, 10))
         self._track(ttk.Button(ra, text='★ 一键正向直导', style='Primary.TButton',
                                command=self.run_forward)).pack(side='left', padx=3)
-        HelpButton(ra, 'forward').pack(side='left')
+        HelpButton(ra, 'forward').pack(side='left', padx=(0, 16))
+        self.var_incremental = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ra, text='增量同步（源独有新增/共有更新/目标独有保留）',
+                        variable=self.var_incremental).pack(side='left')
+        HelpButton(ra, 'incremental').pack(side='left', padx=4)
 
     # ---------------- 页签 3：反向导出 ----------------
     def _tab_backward(self):
@@ -367,11 +430,13 @@ class App(tk.Tk):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text='维护工具')
 
-        self.mt_conn = ConnPanel(f, '第 1 步 · 维护连接（填写需维护的账套）', self)
+        # 连接与操作融合：连接面板即操作面板，连接成功后直接在下方卡片操作，无需切换步骤
+        self.mt_conn = ConnPanel(f, '维护连接（填好后点测试连接，成功后直接在下方操作）', self)
         self.mt_conn.pack(fill='x', padx=6, pady=6)
 
         card = self._card(f)
-        StepHeader(card, 2, '账套维护').pack(anchor='w', padx=8, pady=(6, 0))
+        ttk.Label(card, text='连接后的维护操作', style='H.Card.TLabel').pack(
+            anchor='w', padx=10, pady=(8, 0))
         r1 = ttk.Frame(card, style='Card.TFrame')
         r1.pack(anchor='w', padx=10, pady=6)
         for txt, key, cmd in [
@@ -382,15 +447,18 @@ class App(tk.Tk):
             HelpButton(r1, key).pack(side='left', padx=(0, 10))
 
         r2 = ttk.Frame(card, style='Card.TFrame')
-        r2.pack(anchor='w', padx=10, pady=(0, 8))
+        r2.pack(anchor='w', padx=10, pady=(0, 10))
         ttk.Label(r2, text='回滚前缀：', style='Card.TLabel').pack(side='left')
         self.var_roll = tk.StringVar()
-        ttk.Entry(r2, textvariable=self.var_roll, width=28).pack(side='left', padx=4)
+        ttk.Entry(r2, textvariable=self.var_roll, width=26).pack(side='left', padx=4)
+        ttk.Button(r2, text='填入最近', command=self.fill_latest_prefix).pack(side='left', padx=2)
         self._track(ttk.Button(r2, text='回滚恢复', command=self.do_rollback)).pack(side='left', padx=3)
+        self._track(ttk.Button(r2, text='★ 一键回滚最近备份', style='Primary.TButton',
+                               command=self.do_rollback_latest)).pack(side='left', padx=6)
         HelpButton(r2, 'rollback').pack(side='left')
 
-        # 差异对比
-        cmpf = ttk.LabelFrame(f, text=' 第 3 步 · 源-目标差异对比（只读） ')
+        # 附加功能：差异对比（只读）
+        cmpf = ttk.LabelFrame(f, text=' 附加功能 · 源-目标差异对比（只读） ')
         cmpf.pack(fill='x', padx=6, pady=6)
         self.cmp_src = ConnPanel(cmpf, '对比源', self)
         self.cmp_src.pack(fill='x', padx=6, pady=6)
@@ -514,19 +582,55 @@ class App(tk.Tk):
         self.submit('Excel 导入', worker)
 
     # ---------------- 正向动作 ----------------
+    def pick_mdf(self):
+        p = filedialog.askopenfilename(title='选择千业 .mdf 主数据文件',
+                                       filetypes=[('SQL Server 数据文件', '*.mdf'), ('所有文件', '*.*')])
+        if p:
+            self.var_mdf.set(p)
+            if not self.var_newdb.get():
+                self.var_newdb.set(os.path.splitext(os.path.basename(p))[0])
+
+    def pick_ldf(self):
+        p = filedialog.askopenfilename(title='选择 .ldf 日志文件（可取消不选）',
+                                       filetypes=[('SQL Server 日志文件', '*.ldf'), ('所有文件', '*.*')])
+        if p:
+            self.var_ldf.set(p)
+
+    def do_attach(self):
+        mdf = self.var_mdf.get().strip()
+        if not mdf:
+            messagebox.showwarning('提示', '请先选择 .mdf 主数据文件')
+            return
+        sp = self.fwd_src
+        ldf = self.var_ldf.get().strip()
+        newdb = self.var_newdb.get().strip()
+
+        def worker():
+            def logcb(m):
+                self.log('INFO', '附加', 0, m)
+            db = core.attach_database(sp.var_server.get().strip(), sp.var_user.get().strip(),
+                                      sp.var_pwd.get(), mdf, ldf, newdb, logcb=logcb)
+            # 附加成功：自动把库名填入源连接，并刷新源下拉
+            sp.var_db.set(db)
+            sp.load_databases()
+            self.log('INFO', '附加', 0, '已自动附加并将源库设为「%s」，可直接执行正向直导' % db)
+        self.submit('自动附加', worker)
+
     def run_forward(self):
         mods = [m for m, v in self.fwd_chk.items() if v.get()]
         if not mods:
             messagebox.showwarning('提示', '请至少勾选一个模块')
             return
         sp, dp = self.fwd_src, self.fwd_dst
+        incremental = self.var_incremental.get()
 
         def worker():
             s, d = sp.connect(), dp.connect()
             srcimp.import_from_db(s.cursor(), d.cursor(), sp.var_db.get(), mods,
-                                  lambda k, m, l, x: self.log(k, m, l, x))
+                                  lambda k, m, l, x: self.log(k, m, l, x),
+                                  incremental=incremental)
             s.close(); d.close()
-        self.submit('正向直导', worker)
+        self.submit('正向直导（增量）' if incremental else '正向直导', worker)
 
     # ---------------- 反向动作 ----------------
     def run_backward(self):
@@ -581,6 +685,45 @@ class App(tk.Tk):
             self.log('INFO', '回滚', 0, '已从 %s 恢复' % pre)
         self.submit('回滚', worker)
 
+    def fill_latest_prefix(self):
+        """查询最近备份前缀并填入回滚框（只读，不改动数据）"""
+        panel = self.mt_conn
+        try:
+            cn = panel.connect()
+            latest = core.latest_backup_prefix(cn.cursor())
+            cn.close()
+            if latest:
+                self.var_roll.set(latest)
+                self.log('INFO', '回滚', 0, '最近备份前缀：%s' % latest)
+            else:
+                messagebox.showinfo('提示', '当前库没有任何备份')
+        except Exception as e:
+            messagebox.showerror('查询失败', str(e))
+
+    def do_rollback_latest(self):
+        """一键回滚到最近备份：先查最近前缀，确认后回滚"""
+        panel = self.mt_conn
+        try:
+            cn = panel.connect()
+            latest = core.latest_backup_prefix(cn.cursor())
+            cn.close()
+        except Exception as e:
+            messagebox.showerror('查询失败', str(e))
+            return
+        if not latest:
+            messagebox.showinfo('提示', '当前库没有任何备份，无法回滚')
+            return
+        if not messagebox.askyesno('确认', '一键回滚到最近备份 %s，覆盖当前数据，确定？' % latest):
+            return
+        self.var_roll.set(latest)
+
+        def worker():
+            cn = panel.connect()
+            core.rollback_tables(cn.cursor(), latest)
+            cn.close()
+            self.log('INFO', '回滚', 0, '已一键回滚到最近备份 %s' % latest)
+        self.submit('一键回滚', worker)
+
     def do_clearcache(self):
         ok, msg = core.clear_localdata(self.mt_conn.var_db.get().strip())
         self.log('INFO' if ok else 'FAIL', '缓存', 0, msg)
@@ -611,7 +754,7 @@ class App(tk.Tk):
                 dc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
                 dx = set(r[0] for r in dc.fetchall())
                 self.log('INFO', '对比', 0, '商品 BaseNo：源独有 %d（待新增），目标独有 %d，共有 %d' %
-                         (len(sx - dx), len(dx - sx), len(sx & dx)))
+                         (len(sx - dx), len(dx - dx), len(sx & dx)))
             except Exception as e:
                 self.log('WARN', '对比', 0, 'BaseNo 差异跳过：%s' % e)
             s.close(); d.close()
