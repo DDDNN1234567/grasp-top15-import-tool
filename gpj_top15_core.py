@@ -661,7 +661,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                                _v(row, '商品全名'), _v(row, '简名'), '', _v(row, '型号'), _v(row, '规格'),
                                _v(row, '产地'), _v(row, '成本算法'), _v(row, '商品属性'),
                                _v(row, '联营扣率(%)'), _v(row, '默认供应商(编号)'), _v(row, '品牌(编号)'),
-                               _v(row, '计价方式'), _v(row, '有效期(天)'), _v(row, '备注'),
+                               _v(row, '计价方式'), _v(row, '有效期(天)', '有效期'), _v(row, '备注'),
                                _v(row, '基本单位'), _v(row, '条码'), _v(row, '零售价'),
                                _v(row, '预设售价1'), _v(row, '预设售价2'), _v(row, '预设售价3'),
                                _v(row, '配送价'), _v(row, '最近折后进价'), _v(row, '最低售价'),
@@ -763,7 +763,7 @@ def orchestrate(cur, files, modules, logcb):
 
 # ---------------- 模板生成 ----------------
 def generate_template(path):
-    """生成官方规格 6-sheet xlsx 模板（含示例行编号带'示例'前缀，导入时自动跳过）"""
+    """生成官方规格 6-sheet xlsx 模板（示例行编号带'示例'前缀，导入时自动跳过）"""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.comments import Comment
