@@ -557,7 +557,7 @@ SELECT @rc,@rt,@err;""",
 def call_stockini(cur, ptypeid, puser, ktypeid, kuser, qty, total='', jobno='', createdate='', userend=''):
     cur.execute("""
 SET NOCOUNT ON;
-DECLARE @oid int, @err varchar(250); @err varchar(250); DECLARE @rc int;
+DECLARE @oid int, @err varchar(250); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_ModInitGoodsStocks_SNMng_Package @szptypeid=?,@szPUserCode=?,@szktypeid=?,
   @szKUserCode=?,@szslFullname='',@szslUserCode='',@dQty=?,@dTotal=?,@JobNumber=?,@CreateDate=?,
   @UserEndDate=?,@SideQty='',@szSnNo='',@OrderID=@oid OUTPUT,@errorValue=@err OUTPUT;
@@ -763,7 +763,7 @@ def orchestrate(cur, files, modules, logcb):
 
 # ---------------- 模板生成 ----------------
 def generate_template(path):
-    """生成官方规格 6-sheet xlsx 模板（示例行编号带'示例'前缀，导入时自动跳过）"""
+    """生成官方规格 6-sheet xlsx 模板（含示例行编号带'示例'前缀，导入时自动跳过）"""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.comments import Comment
