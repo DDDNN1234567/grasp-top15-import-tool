@@ -321,7 +321,7 @@ class App(tk.Tk):
         self._track(ttk.Button(row, text='生成模板', command=self.gen_tpl)).pack(side='left', padx=3)
         HelpButton(row, 'gen_tpl').pack(side='left', padx=(0, 8))
         self._track(ttk.Button(row, text='扫描识别', command=self.scan_files)).pack(side='left', padx=3)
-        HelpButton(row, 'scan').pack(side='left')
+        HelpButton(row, 'can').pack(side='left')
         self.lbl_files = ttk.Label(card, text='未选择文件', style='Muted.Card.TLabel')
         self.lbl_files.pack(anchor='w', padx=10)
         self.lst_files = tk.Listbox(card, height=3, relief='flat', bg='#F4F8FC',
@@ -754,7 +754,7 @@ class App(tk.Tk):
                 dc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
                 dx = set(r[0] for r in dc.fetchall())
                 self.log('INFO', '对比', 0, '商品 BaseNo：源独有 %d（待新增），目标独有 %d，共有 %d' %
-                         (len(sx - dx), len(dx - dx), len(sx & dx)))
+                         (len(sx - dx), len(dx - sx), len(sx & dx)))
             except Exception as e:
                 self.log('WARN', '对比', 0, 'BaseNo 差异跳过：%s' % e)
             s.close(); d.close()
