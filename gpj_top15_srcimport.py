@@ -257,7 +257,20 @@ def resolve_real_ids(dst_cur):
             m[cid.strip()] = iid.strip()
         real[t] = m
     return real
-def write_barcodes(src_cur, dst_cur, db, mp, real=None):
+def _delete_scope(dst_cur, table, id_col, src_ids, incremental):
+    """全量模式清空整表；增量模式只删源商品对应行（临时表限定），保留目标独有数据。"""
+    if not incremental:
+        dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.%s WHERE 1=1" % table)
+        return
+    dst_cur.execute("IF OBJECT_ID('tempdb..#srcids') IS NOT NULL DROP TABLE #srcids;"
+                    " CREATE TABLE #srcids (id varchar(50))")
+    dst_cur.fast_executemany = False
+    dst_cur.executemany("INSERT INTO #srcids VALUES (?)", [(x,) for x in set(src_ids)])
+    dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.%s WHERE [%s] IN (SELECT id FROM #srcids)" % (table, id_col))
+    dst_cur.execute("DROP TABLE #srcids")
+
+
+def write_barcodes(src_cur, dst_cur, db, mp, real=None, incremental=False):
     """BasPTypeBarMx -> xw_PtypeBarCode（UnitID='0' 数字串，Ordid=IndexID，keyid=NEWID）
     real: {映射编号->实际树编号} 反查表（缺省直用映射编号）"""
     src_cur.execute("SET NOCOUNT ON; SELECT PTypeID, BarCode, IndexID FROM %s.dbo.BasPTypeBarMx WHERE BarCode IS NOT NULL AND LTRIM(RTRIM(BarCode))<>''" % db)
@@ -269,7 +282,7 @@ def write_barcodes(src_cur, dst_cur, db, mp, real=None):
             continue
         p = rp.get(p, p)
         data.append((p, '0', bc.strip(), int(ix or 0)))
-    dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_PtypeBarCode WHERE 1=1")
+    _delete_scope(dst_cur, 'xw_PtypeBarCode', 'PTypeId', [d[0] for d in data], incremental)
     n = 0
     dst_cur.fast_executemany = True
     for i in range(0, len(data), 2000):
@@ -281,7 +294,7 @@ def write_barcodes(src_cur, dst_cur, db, mp, real=None):
     return n
 
 
-def write_units(src_cur, dst_cur, db, mp, real=None):
+def write_units(src_cur, dst_cur, db, mp, real=None, incremental=False):
     """BasPtypeInner 基本/辅助单位 -> xw_PtypeUnit（Ordid=0/1/2/3）
     URate 取千业真实换算率列 PercentBasic/PercentOne/PercentTwo/PercentThree
     （UpdateDB.sql 权威佐证：Percent*=UnitRate*，1 辅单位=URate 基本单位；0/NULL 回退 1）"""
@@ -313,7 +326,7 @@ def write_units(src_cur, dst_cur, db, mp, real=None):
             data.append((p, a2, _rate(r2), 0, 2))
         if a3 and a3 != bu and a3 != a1 and a3 != a2:
             data.append((p, a3, _rate(r3), 0, 3))
-    dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_PtypeUnit WHERE 1=1")
+    _delete_scope(dst_cur, 'xw_PtypeUnit', 'PTypeId', [d[0] for d in data], incremental)
     n = 0
     dst_cur.fast_executemany = True
     for i in range(0, len(data), 2000):
@@ -325,7 +338,7 @@ def write_units(src_cur, dst_cur, db, mp, real=None):
     return n
 
 
-def write_prices(src_cur, dst_cur, db, mp, real=None):
+def write_prices(src_cur, dst_cur, db, mp, real=None, incremental=False):
     """预设价格完整 16 方案直写：
     1) 自动补齐缺失的自定义价格类型（IsSystem=0，F_GetPriceInfo 动态读取）
     2) BasPtypeInner：SalePriceBasic->0001 零售价 / RecentPrice->0005 最近进价 / RecentPrice1->0007 最近售价
@@ -359,8 +372,8 @@ def write_prices(src_cur, dst_cur, db, mp, real=None):
             continue
         seen.add((p, pr))
         data.append((p, '0', pr, float(adv)))
-    # 清空重写（幂等可重跑）
-    dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_P_PtypePrice WHERE 1=1")
+    # 全量清空重写 / 增量只删源商品（幂等可重跑）
+    _delete_scope(dst_cur, 'xw_P_PtypePrice', 'PTypeId', [d[0] for d in data], incremental)
     n = 0
     dst_cur.fast_executemany = True
     for i in range(0, len(data), 5000):
@@ -372,7 +385,7 @@ def write_prices(src_cur, dst_cur, db, mp, real=None):
     return n, nc
 
 
-def write_pricefollow(src_cur, dst_cur, db, mp_p, mp_b, real=None):
+def write_pricefollow(src_cur, dst_cur, db, mp_p, mp_b, real=None, incremental=False):
     """price 表(千业客户价格) -> xw_P_PriceFollow：每条记录展开 4 行
     (0005 最近进价 / 0006 最近进货折扣 / 0007 最近售价 / 0008 最近销售折扣)，PPType=6
     按 (ptypeid,btypeid) 去重（源库 Units=-1/1 重复记录）；引用用官方过程实际树编号"""
@@ -395,7 +408,15 @@ FROM %s.dbo.price GROUP BY ptypeid, btypeid""" % db)
             data.append((p, b, '0', float(bd or 0), '0006'))
             data.append((p, b, '0', sp or 0, '0007'))
             data.append((p, b, '0', float(sd or 0), '0008'))
-    dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_P_PriceFollow WHERE PPType=6")
+    if incremental:
+        dst_cur.execute("IF OBJECT_ID('tempdb..#srcids') IS NOT NULL DROP TABLE #srcids;"
+                        " CREATE TABLE #srcids (id varchar(50))")
+        dst_cur.fast_executemany = False
+        dst_cur.executemany("INSERT INTO #srcids VALUES (?)", [(x,) for x in set(d[0] for d in data)])
+        dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_P_PriceFollow WHERE PPType=6 AND PTypeId IN (SELECT id FROM #srcids)")
+        dst_cur.execute("DROP TABLE #srcids")
+    else:
+        dst_cur.execute("SET NOCOUNT ON; DELETE FROM dbo.xw_P_PriceFollow WHERE PPType=6")
     n = 0
     dst_cur.fast_executemany = True
     for i in range(0, len(data), 10000):
@@ -407,9 +428,165 @@ FROM %s.dbo.price GROUP BY ptypeid, btypeid""" % db)
     return n
 
 
+# ---------------- 主表字段动态补全（官方过程未覆盖字段） ----------------
+# 规格：(目标表, 源Bas表, real键, 目标id列, [(源列, 目标列, 类型 num/bit), ...])
+# 仅纳入语义明确的字段；源有目标无的字段走备注追加（COMMENT_SPECS）。
+FILL_SPECS = [
+    ('btype', 'BasUnitTypeInner', 'btype', 'btypeid', [
+        ('ARTotal', 'ARTotal', 'num'),              # 当前应收（区别于期初 ARTotal00）
+        ('APTotal', 'APTotal', 'num'),              # 当前应付
+        ('CurPrepayARTotal', 'YRTotal', 'num'),     # 当前预收
+        ('CurPrepayAPTotal', 'YPTotal', 'num'),     # 当前预付
+        ('ARWaringUp', 'R_WARNUP', 'num'),
+        ('PRWaringUp', 'P_WARNUP', 'num'),
+        ('Stoped', 'isStop', 'bit'),
+    ]),
+    ('ptype', 'BasPtypeInner', 'ptype', 'ptypeid', [
+        ('RecentPrice', 'LastBuyPrice', 'num'),     # 最近进价（主表冗余列）
+        ('WaringUp', 'warnup', 'num'),
+        ('WaringDown', 'warndown', 'num'),
+        ('Stoped', 'isStop', 'bit'),
+    ]),
+    ('Stock', 'BasStockInner', 'Stock', 'ktypeid', [
+        ('Stoped', 'isStop', 'bit'),
+    ]),
+    ('employee', 'BasPersonInner', 'employee', 'etypeid', [
+        ('Stoped', 'isStop', 'bit'),
+    ]),
+]
+
+# 源有目标无、追加到备注的字段：(目标表, 源表, real键, id列, 备注列, [(源列, 标签)])
+COMMENT_SPECS = [
+    ('employee', 'BasPersonInner', 'employee', 'etypeid', 'ecomment',
+     [('Sex', '性别'), ('IDCard', '身份证'), ('EducateLevel', '学历')]),
+    ('btype', 'BasUnitTypeInner', 'btype', 'btypeid', 'bcomment',
+     [('QQNo', 'QQ'), ('MsnNo', 'MSN')]),
+]
+
+
+def _conv(v, t):
+    if t == 'bit':
+        return 1 if v in (True, 1, '1') else 0
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fill_main_fields(src_cur, dst_cur, db, mp, real, spec, logcb=None):
+    """单个目标表的字段补全：读源→映射实际树编号→临时表→一条 JOIN UPDATE 批量更新。返回更新行数。"""
+    target, src_table, real_key, id_col, cols = spec
+    real_map = (real or {}).get(real_key, {})
+    src_cols = ', '.join('[%s]' % s for s, _, _ in cols)
+    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, %s FROM %s.dbo.%s" % (src_cols, db, src_table))
+    records = []
+    for row in src_cur.fetchall():
+        code = mp.get(int(row[0]))
+        if not code:
+            continue
+        tid = real_map.get(code.strip(), code.strip())
+        records.append((tid,) + tuple(_conv(row[i], t) for i, (_, _, t) in enumerate(cols, start=1)))
+    if not records:
+        return 0
+    tgt_cols = [tg for _, tg, _ in cols]
+    coldefs = ', '.join('[%s] %s' % (tg, ('int' if t == 'bit' else 'numeric(18,4)'))
+                        for _, tg, t in cols)
+    dst_cur.execute("IF OBJECT_ID('tempdb..#fill') IS NOT NULL DROP TABLE #fill;"
+                    " CREATE TABLE #fill (id varchar(50) NOT NULL, %s)" % coldefs)
+    qmarks = ', '.join(['?'] * (len(cols) + 1))
+    # 不用 fast_executemany：它对临时表 numeric 列的批量绑定在混合类型下会误报 8114；
+    # 普通 executemany 实测 883 行仅 0.06s，24k 行也在亚秒级，足够快。
+    dst_cur.fast_executemany = False
+    dst_cur.executemany("INSERT INTO #fill VALUES (%s)" % qmarks, records)
+    setclause = ', '.join('t.[%s]=f.[%s]' % (tg, tg) for tg in tgt_cols)
+    dst_cur.execute("UPDATE t SET %s FROM dbo.%s t JOIN #fill f ON t.[%s]=f.id"
+                    % (setclause, target, id_col))
+    dst_cur.execute("DROP TABLE #fill")
+    # UPDATE...FROM JOIN 在 autocommit 下 rowcount 常返回 -1，无参考价值；返回候选行数
+    return len(records)
+
+
+def append_comment_fields(src_cur, dst_cur, db, mp, real, spec, logcb=None):
+    """把源有目标无的字段以“标签:值”追加到备注（幂等：已含标签不重复）。返回追加行数。"""
+    target, src_table, real_key, id_col, comment_col, fields = spec
+    real_map = (real or {}).get(real_key, {})
+    src_cols = ', '.join('[%s]' % s for s, _ in fields)
+    src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, %s FROM %s.dbo.%s" % (src_cols, db, src_table))
+    n = 0
+    for row in src_cur.fetchall():
+        code = mp.get(int(row[0]))
+        if not code:
+            continue
+        tid = real_map.get(code.strip(), code.strip())
+        pieces = []
+        for i, (s, label) in enumerate(fields, start=1):
+            v = row[i]
+            if v is not None and str(v).strip() not in ('', '0'):
+                pieces.append('%s:%s' % (label, str(v).strip()))
+        if not pieces:
+            continue
+        dst_cur.execute("SET NOCOUNT ON; SELECT [%s] FROM dbo.%s WHERE [%s]=?"
+                        % (comment_col, target, id_col), tid)
+        rr = dst_cur.fetchone()
+        if not rr:
+            continue
+        cur_comment = rr[0] or ''
+        add = '; '.join(p for p in pieces if p.split(':')[0] not in cur_comment)
+        if not add:
+            continue
+        new_comment = (cur_comment + '; ' + add) if cur_comment else add
+        dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.%s SET [%s]=? WHERE [%s]=?"
+                        % (target, comment_col, id_col), new_comment, tid)
+        n += 1
+    return n
+
+
+# ---------------- 增量同步（基于 usercode/BaseNo 集合差异） ----------------
+# 模块 -> (目标表, usercode列, 行内编号key, 可更新字段[(行key, 目标列)])
+INCREMENTAL_META = {
+    'unit': ('btype', 'busercode', '单位编号', [
+        ('单位全名', 'bfullname'), ('单位简名', 'bname'), ('单位电话', 'TelAndAddress'),
+        ('手机一', 'moPhone'), ('传真', 'Fax'), ('联系人一', 'Person'), ('备注', 'bcomment')]),
+    'goods': ('ptype', 'pusercode', '商品编号', [
+        ('商品全名', 'pfullname'), ('简名', 'pname'), ('规格', 'Standard'), ('备注', 'pcomment')]),
+    'warehouse': ('Stock', 'kusercode', '仓库编号', [
+        ('仓库全名', 'kfullname'), ('仓库简称', 'kname'), ('备注', 'kcomment')]),
+    'employee': ('employee', 'eusercode', '职员编号', [
+        ('职员全名', 'efullname'), ('备注', 'ecomment')]),
+}
+
+
+def existing_usercodes(dst_cur, table, uc_col):
+    """目标库当前已有的 usercode 集合（=已导入的源 BaseNo 传入编号）"""
+    dst_cur.execute("SET NOCOUNT ON; SELECT [%s] FROM dbo.%s WHERE [%s] IS NOT NULL AND [%s]<>''"
+                    % (uc_col, table, uc_col, uc_col))
+    return set(r[0] for r in dst_cur.fetchall())
+
+
+def split_incremental(rows, id_key, existing):
+    """按 usercode 差异分流：新增（目标没有）/ 更新（目标已有）。目标独有行不在此处理，自动保留。"""
+    new_rows, upd_rows = [], []
+    for r in rows:
+        (upd_rows if r.get(id_key) in existing else new_rows).append(r)
+    return new_rows, upd_rows
+
+
+def update_existing_rows(dst_cur, module, upd_rows):
+    """共有行：只更新名称/联系/备注等可变字段，不动树编号与层级。返回更新行数。"""
+    table, uc_col, id_key, fields = INCREMENTAL_META[module]
+    setclause = ', '.join('[%s]=?' % tc for _, tc in fields)
+    sql = "SET NOCOUNT ON; UPDATE dbo.%s SET %s, updatetag=10000 WHERE [%s]=?" % (table, setclause, uc_col)
+    n = 0
+    for r in upd_rows:
+        vals = [r.get(k) or '' for k, _ in fields]
+        dst_cur.execute(sql, vals + [r[id_key]])
+        n += 1
+    return n
+
+
 # ---------------- 编排 ----------------
-def import_from_db(src_cur, dst_cur, db, modules, logcb):
-    """源库直连一键导入：备份 → 四表官方过程 → 明细直写 → 期初库存官方过程 → 归位"""
+def import_from_db(src_cur, dst_cur, db, modules, logcb, incremental=False):
+    """源库直连一键导入：备份 → 四表官方过程 → 明细直写 → 字段补全 → 期初库存 → 归位"""
     # 1. 备份
     pre = core.backup_tables(dst_cur)
     logcb('INFO', '备份', 0, '已备份 %d 张表（含业务表，前缀 %s）' % (len(core.BAK_TABLES), pre))
@@ -435,41 +612,61 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
             bar_map.setdefault(int(pt), bc.strip())
         # 3. 四表官方过程（复用 core.import_sheet 通道与日志）
         resolver = core.ParentResolver(dst_cur)
+        def _prep(module, rows_all):
+            if not incremental:
+                return rows_all
+            tbl, ucc, idk, _ = INCREMENTAL_META[module]
+            exist = existing_usercodes(dst_cur, tbl, ucc)
+            new_rows, upd_rows = split_incremental(rows_all, id_key=idk, existing=exist)
+            nu = update_existing_rows(dst_cur, module, upd_rows)
+            logcb('INFO', module, 0, '增量分流：更新 %d 行、待新增 %d 行（目标独有数据保留不删）' % (nu, len(new_rows)))
+            return new_rows
+
         if 'unit' in modules:
-            rows = build_unit_rows(src_cur, db, mp_u)
-            logcb('INFO', 'unit', 0, '── 开始导入单位（%d 行）──' % len(rows))
+            rows = _prep('unit', build_unit_rows(src_cur, db, mp_u))
+            logcb('INFO', 'unit', 0, '── 开始导入单位（新增 %d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'unit', rows, logcb, resolver)
             logcb('INFO', 'unit', 0, '── 单位完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'warehouse' in modules:
-            rows = build_warehouse_rows(src_cur, db, mp_k)
-            logcb('INFO', 'warehouse', 0, '── 开始导入仓库（%d 行）──' % len(rows))
+            rows = _prep('warehouse', build_warehouse_rows(src_cur, db, mp_k))
+            logcb('INFO', 'warehouse', 0, '── 开始导入仓库（新增 %d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'warehouse', rows, logcb, resolver)
             logcb('INFO', 'warehouse', 0, '── 仓库完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'employee' in modules:
-            rows = build_employee_rows(src_cur, db, mp_e)
-            logcb('INFO', 'employee', 0, '── 开始导入职员（%d 行）──' % len(rows))
+            rows = _prep('employee', build_employee_rows(src_cur, db, mp_e))
+            logcb('INFO', 'employee', 0, '── 开始导入职员（新增 %d 行）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'employee', rows, logcb, resolver)
             logcb('INFO', 'employee', 0, '── 职员完成：成功 %d，失败 %d ──' % (ok, fail))
         if 'goods' in modules:
-            rows = build_goods_rows(src_cur, db, mp_p, bar_map)
-            logcb('INFO', 'goods', 0, '── 开始导入商品（%d 行，价格/辅助单位/条码走直写）──' % len(rows))
+            rows = _prep('goods', build_goods_rows(src_cur, db, mp_p, bar_map))
+            logcb('INFO', 'goods', 0, '── 开始导入商品（新增 %d 行，价格/辅助单位/条码走直写）──' % len(rows))
             ok, fail, _ = core.import_sheet(dst_cur, 'goods', rows, logcb, resolver)
-            gui = 'x'
             logcb('INFO', 'goods', 0, '── 商品完成：成功 %d，失败 %d ──' % (ok, fail))
         # 4. 明细直写（引用官方过程实际树编号：pusercode 反查）
         real = resolve_real_ids(dst_cur)
         if 'barcode' in modules:
-            n = write_barcodes(src_cur, dst_cur, db, mp_p, real)
+            n = write_barcodes(src_cur, dst_cur, db, mp_p, real, incremental)
             logcb('INFO', 'barcode', 0, '条码直写完成：%d 行' % n)
         if 'assistunit' in modules:
-            n = write_units(src_cur, dst_cur, db, mp_p, real)
+            n = write_units(src_cur, dst_cur, db, mp_p, real, incremental)
             logcb('INFO', 'assistunit', 0, '辅助单位直写完成：%d 行' % n)
         if 'price' in modules:
-            n, nc = write_prices(src_cur, dst_cur, db, mp_p, real)
+            n, nc = write_prices(src_cur, dst_cur, db, mp_p, real, incremental)
             logcb('INFO', 'price', 0, '预设价格直写完成：%d 行（自动新建自定义价格类型 %d 个，共 16 方案）' % (n, nc))
         if 'pricefollow' in modules:
-            n = write_pricefollow(src_cur, dst_cur, db, mp_p, mp_u, real)
+            n = write_pricefollow(src_cur, dst_cur, db, mp_p, mp_u, real, incremental)
             logcb('INFO', 'pricefollow', 0, '单位价格跟踪直写完成：%d 行' % n)
+        # 4b. 主表字段动态补全（官方过程未覆盖：当前应收应付/最近进价/停用/预警等）
+        mp_by_real = {'btype': mp_u, 'ptype': mp_p, 'Stock': mp_k, 'employee': mp_e}
+        for spec in FILL_SPECS:
+            n = fill_main_fields(src_cur, dst_cur, db, mp_by_real[spec[2]], real, spec, logcb)
+            if n:
+                logcb('INFO', '补全', 0, '%s 动态补全 %d 行（%s）' %
+                      (spec[0], n, '、'.join(c[1] for c in spec[4])))
+        for spec in COMMENT_SPECS:
+            n = append_comment_fields(src_cur, dst_cur, db, mp_by_real[spec[2]], real, spec, logcb)
+            if n:
+                logcb('INFO', '补全', 0, '%s 备注追加 %d 行' % (spec[0], n))
         # 5. 期初库存（官方过程，依赖商品/仓库已导入）
         if 'stockini' in modules:
             name_p = {}
@@ -491,10 +688,31 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb):
                         "UPDATE dbo.Stock SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.employee SET updatetag=10000 WHERE updatetag<10000;"
                         "UPDATE dbo.xw_BaseUpdateTag SET UpdateTag=0")
-        # 6b. 单位拼音补齐：官方单位过程不维护 bnamepy，用库内 fn_GetPyCode 按全名补（客户端拼音检索）
-        dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.btype SET bnamepy=dbo.fn_GetPyCode(bfullname)"
-                        " WHERE leveal>0 AND (bnamepy IS NULL OR bnamepy='')")
-        logcb('INFO', '归位', 0, 'updatetag 归位完成 + 单位拼音补齐（备份前缀 %s，可在管家婆内核对后回滚）' % pre)
+        # 6b. 单位拼音补齐（健壮化：函数缺失/异常绝不阻断主流程，源 PyNo 兜底）
+        try:
+            dst_cur.execute("SET NOCOUNT ON; SELECT OBJECT_ID('dbo.fn_GetPyCode')")
+            if dst_cur.fetchone()[0] is not None:
+                dst_cur.execute("SET NOCOUNT ON; UPDATE dbo.btype SET bnamepy=dbo.fn_GetPyCode(bfullname)"
+                                " WHERE leveal>0 AND (bnamepy IS NULL OR bnamepy='')")
+                logcb('INFO', '归位', 0, '单位拼音补齐完成（数据库函数）')
+            else:
+                raise RuntimeError('目标库缺少 fn_GetPyCode')
+        except Exception as pe:
+            try:
+                src_cur.execute("SET NOCOUNT ON; SELECT BaseNo, PyNo FROM %s.dbo.BasUnitTypeInner" % db)
+                rp = real.get('btype', {})
+                recs = []
+                for bn, pyno in src_cur.fetchall():
+                    code = mp_u.get(int(bn))
+                    if code and pyno and str(pyno).strip():
+                        recs.append((str(pyno).strip(), rp.get(code.strip(), code.strip())))
+                dst_cur.fast_executemany = True
+                dst_cur.executemany("SET NOCOUNT ON; UPDATE dbo.btype SET bnamepy=? WHERE btypeid=? "
+                                    "AND (bnamepy IS NULL OR bnamepy='')", recs)
+                logcb('WARN', '归位', 0, '数据库拼音函数不可用，已用源 PyNo 兜底 %d 行（原因：%s）' % (len(recs), pe))
+            except Exception as pe2:
+                logcb('WARN', '归位', 0, '拼音补齐未完成（不影响核心数据，可在管家婆内手工生成）：%s' % pe2)
+        logcb('INFO', '归位', 0, 'updatetag 归位完成（备份前缀 %s，可在管家婆内核对后回滚）' % pre)
         return pre
     except Exception as e:
         logcb('FAIL', '导入', 0, '导入中止：%s（备份前缀 %s 可回滚）' % (e, pre))
