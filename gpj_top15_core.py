@@ -48,7 +48,7 @@ ALL_COLS = {
 
 # 官方模板表头（含前导行说明时会跳过）
 TEMPLATE_SAMPLE = {
-    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '零售价'],
+    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '', '零售价'],
     '仓库': ['00000', '示例001', '示例仓库', '仓库', '', '', '', ''],
     '商品': ['00000', '示例001', '示例商品', '商品', '', '', '', '0', '', '', '', '', '', '', '', '件', '690000000001', '10', '12', '13', '14', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
     '职员': ['00000', '示例001', '示例职员', '', '', '', '', '', '', ''],
@@ -293,7 +293,7 @@ BAK_TABLES = ['btype', 'ptype', 'Stock', 'employee', 'IniGoodsStocks',
 def backup_tables(cur):
     """SELECT INTO 备份核心表（含委托/受托、借进/借出业务表），返回备份前缀"""
     stamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-    pre = '_impbak_'
+    pre = '_impbak_' + stamp
     for t in BAK_TABLES:
         cur.execute("SET NOCOUNT ON; SELECT * INTO %s%s FROM dbo.%s" % (t, pre, t))
     return pre
@@ -644,13 +644,13 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                               _v(row, '联系人二'), _v(row, '开户银行'), _v(row, '银行账号'),
                               _v(row, '税号'), _v(row, '期初应收款'), _v(row, '期初应付款'),
                               _v(row, '期初预收款'), _v(row, '期初预付款'), _v(row, '应收款上限'),
-                              _v(row, '应付款上限'), _v(row, '结算期限(天)', '备注'),
+                              _v(row, '应付款上限'), _v(row, '结算期限(天)'), _v(row, '备注'),
                               _v(row, '换货期限(天)'), _v(row, '换货比例(%)'), _v(row, '电子邮件'),
                               _v(row, '默认经手人(编号)'), _v(row, '地区(编号)'), _v(row, '结算单位(编号)'),
                               _v(row, '适用价格'))
                 rc, out, err = r[0], r[1], r[2]
             elif module == 'warehouse':
-                par = resolver.resolve(module, _v(row, '单位编号'), _v(row, '单位编号'), _v(row, '单位编号'),
+                par = resolver.resolve(module, _v(row, '父类编号')) if resolver else (_v(row, '父类编号') or '00000')
                 r = call_warehouse(cur, par, _v(row, '仓库编号'),
                                    _v(row, '仓库全名'), _v(row, '仓库简称'), '', _v(row, '备注'),
                                    _v(row, '仓库地址'), _v(row, '仓库负责人'), _v(row, '负责人电话'))
@@ -661,7 +661,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                                _v(row, '商品全名'), _v(row, '简名'), '', _v(row, '型号'), _v(row, '规格'),
                                _v(row, '产地'), _v(row, '成本算法'), _v(row, '商品属性'),
                                _v(row, '联营扣率(%)'), _v(row, '默认供应商(编号)'), _v(row, '品牌(编号)'),
-                               _v(row, '计价方式'), _v(row, '有效期(天)', '备注'),
+                               _v(row, '计价方式'), _v(row, '有效期(天)'), _v(row, '备注'),
                                _v(row, '基本单位'), _v(row, '条码'), _v(row, '零售价'),
                                _v(row, '预设售价1'), _v(row, '预设售价2'), _v(row, '预设售价3'),
                                _v(row, '配送价'), _v(row, '最近折后进价'), _v(row, '最低售价'),
@@ -686,7 +686,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                                   _v(row, '批号'), _v(row, '生产日期'), _v(row, '有效期至'))
                 rc, out, err = r[0], r[1], r[2]
             elif module == 'pricefollow':
-                r = call_pricefollow(cur, _v(row, '父类编号'), _v(row, '单位全名'), _v(row, '商品编号'),
+                r = call_pricefollow(cur, _v(row, '单位编号'), _v(row, '单位全名'), _v(row, '商品编号'),
                                      _v(row, '商品全名'), _v(row, '计量单位'), _v(row, '最近进价'),
                                      _v(row, '最近售价'), _v(row, '最近进货折扣'), _v(row, '最近销售折扣'))
                 rc, out, err = r[0], r[1], r[2]
@@ -712,7 +712,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
 def orchestrate(cur, files, modules, logcb):
     """一键导入编排：备份 → 按依赖顺序导入所选模块"""
     # 解析 Excel
-    data = {}
+    data = {}  # module -> (header, rows)
     for f in files:
         try:
             sheets = read_excel(f)
@@ -725,7 +725,7 @@ def orchestrate(cur, files, modules, logcb):
                 data[m] = (hdr, rows)
                 logcb('INFO', '文件', 0, '%s：%s sheet %d 行' % (os.path.basename(f), sheetname, len(rows)))
     if not data:
-        logcb('FAIL', '文件', 0, '未从所选 Excel 中识别到任何目标 sheet（单位/商品/仓库/职员/库存信息/单位价格跟踪）')
+        logcb('FAIL', '文件', 0, '未从所选 Excel中识别到任何目标 sheet（单位/商品/仓库/职员/库存信息/单位价格跟踪）')
         return
     # 列校验
     for m in modules:
@@ -754,7 +754,7 @@ def orchestrate(cur, files, modules, logcb):
         logcb('INFO', m, 0, '── 开始导入%s ──' % MODULE_NAMES[m])
         ok, fail, _fails = import_sheet(cur, m, data[m][1], logcb, resolver)
         total_ok += ok
-        total_fail = fail
+        total_fail += fail
         logcb('INFO', m, 0, '── %s 完成：成功 %d，失败 %d ──' % (MODULE_NAMES[m], ok, fail))
     logcb('INFO', '汇总', 0, '全部完成：成功 %d 行，失败 %d 行（备份前缀 %s，可在管家婆内核对后回滚）' %
           (total_ok, total_fail, pre))
