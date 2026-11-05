@@ -48,39 +48,202 @@ ALL_COLS = {
 
 # 官方模板表头（含前导行说明时会跳过）
 TEMPLATE_SAMPLE = {
-    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '', '零售价'],
+    '单位': ['00000', '示例001', '示例客户', '客户', '', '', '', '', '', '', '', '', '', '', '', '0', '0', '0', '0', '', '', '', '', '', '', '', '', '', '', '', '', '零售价'],
     '仓库': ['00000', '示例001', '示例仓库', '仓库', '', '', '', ''],
-    '商品': ['00000', '示例001', '示例商品', '商品', '', '', '', '0', '', '', '', '', '', '', '', '件', '690000000001', '10', '12', '13', '14', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    '商品': ['00000', '示例001', '示例商品', '商品', '', '', '', '0', '', '', '', '', '', '', '', '件', '690000000001', '10', '12', '13', '14', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
     '职员': ['00000', '示例001', '示例职员', '', '', '', '', '', '', ''],
     '库存信息': ['示例001', '示例商品', '示例001', '示例仓库', '100', '1000', '', '', ''],
     '单位价格跟踪': ['示例001', '示例客户', '示例001', '示例商品', '件', '6.5', '11', '0.9', '0.95'],
 }
 
 
-# ---------------- 连接与驱动 ----------------
+# ---------------- 连接与驱动（版本感知） ----------------
+DRV_ODBC18 = 'ODBC Driver 18 for SQL Server'
+DRV_ODBC17 = 'ODBC Driver 17 for SQL Server'
+DRV_ODBC13 = 'ODBC Driver 13 for SQL Server'
+DRV_SNAC11 = 'SQL Server Native Client 11.0'
+DRV_SNAC10 = 'SQL Server Native Client 10.0'
+DRV_LEGACY = 'SQL Server'
+GENERIC_CHAIN = [DRV_ODBC17, DRV_ODBC13, DRV_SNAC11, DRV_SNAC10, DRV_LEGACY]
+VERSION_NAME = {9: '2005', 10: '2008/2008R2', 11: '2012', 12: '2014', 13: '2016',
+                14: '2017', 15: '2019', 16: '2022'}
+VERSION_DRIVER_CHAIN = {
+    9: [DRV_SNAC11, DRV_SNAC10, DRV_LEGACY],
+    10: [DRV_ODBC17, DRV_ODBC13, DRV_SNAC11, DRV_SNAC10, DRV_LEGACY],
+    11: [DRV_ODBC18, DRV_ODBC17, DRV_ODBC13, DRV_SNAC11],
+    12: [DRV_ODBC18, DRV_ODBC17, DRV_ODBC13, DRV_SNAC11],
+    13: [DRV_ODBC18, DRV_ODBC17, DRV_ODBC13, DRV_SNAC11],
+    14: [DRV_ODBC18, DRV_ODBC17, DRV_ODBC13],
+    15: [DRV_ODBC18, DRV_ODBC17, DRV_ODBC13],
+    16: [DRV_ODBC18, DRV_ODBC17],
+}
+
+
 def detect_driver():
-    """探测可用 ODBC 驱动，优先 ODBC Driver 17 → Native Client 11 → SQL Server"""
-    drvs = pyodbc.drivers()
-    for pref in ['ODBC Driver 17 for SQL Server', 'ODBC Driver 13 for SQL Server',
-                 'SQL Server Native Client 11.0', 'SQL Server Native Client 10.0', 'SQL Server']:
-        for d in drvs:
-            if d.lower() == pref.lower():
-                return d
+    """探测一个可用 ODBC 驱动（通用兜底，不区分版本），无则返回 None"""
+    have = {d.lower(): d for d in pyodbc.drivers()}
+    for pref in GENERIC_CHAIN:
+        if pref.lower() in have:
+            return have[pref.lower()]
     return None
 
 
-def connect(server, database, user, pwd, timeout=5):
+def _connect_with(drv, server, database, user, pwd, timeout):
+    """用指定驱动建立连接（autocommit=True）；ODBC18 默认加密，本机自签证书需关闭加密/信任证书。"""
+    cs = 'DRIVER={%s};SERVER=%s;UID=%s;PWD=%s;DATABASE=%s' % (drv, server, user, pwd, database)
+    if drv == DRV_ODBC18:
+        cs += ';Encrypt=no;TrustServerCertificate=yes'
+    return pyodbc.connect(cs, autocommit=True, timeout=timeout)
+
+
+def _probe_major_version(server, user, pwd, timeout):
+    """用任意可用驱动先连 master 拿主版本号；失败返回 None"""
     drv = detect_driver()
     if not drv:
-        raise RuntimeError('未找到可用 ODBC SQL Server 驱动（需安装 ODBC Driver 17 或 Native Client）')
-    cs = 'DRIVER={%s};SERVER=%s;UID=%s;PWD=%s;DATABASE=%s' % (drv, server, user, pwd, database)
-    return pyodbc.connect(cs, autocommit=True, timeout=timeout)
+        return None
+    try:
+        cn = _connect_with(drv, server, 'master', user, pwd, timeout)
+        cur = cn.cursor()
+        cur.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(50))")
+        ver = cur.fetchone()[0]
+        cn.close()
+        return int(str(ver).split('.')[0])
+    except Exception:
+        return None
+
+
+def connect(server, database, user, pwd, timeout=5):
+    """版本感知连接：先探测服务器版本，按版本选择首选驱动链，逐个尝试直到成功。"""
+    have = {d.lower(): d for d in pyodbc.drivers()}
+    if not have:
+        raise RuntimeError('未找到任何 ODBC SQL Server 驱动（需安装 ODBC Driver 17/18 或 Native Client）')
+    major = _probe_major_version(server, user, pwd, timeout)
+    chain = VERSION_DRIVER_CHAIN.get(major, GENERIC_CHAIN) if major is not None else GENERIC_CHAIN
+    candidates = [have[n.lower()] for n in chain if n.lower() in have]
+    for d in pyodbc.drivers():
+        if d not in candidates:
+            candidates.append(d)
+    last_err = None
+    for drv in candidates:
+        try:
+            return _connect_with(drv, server, database, user, pwd, timeout)
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError('所有驱动均连接失败：%s' % last_err)
+
+
+def list_databases(server, user, pwd, timeout=5):
+    """连接 master 枚举在线数据库名，返回列表（供界面下拉手工选择）"""
+    cn = connect(server, 'master', user, pwd, timeout)
+    try:
+        cur = cn.cursor()
+        cur.execute("SET NOCOUNT ON; SELECT name FROM sys.databases WHERE state=0 ORDER BY name")
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        cn.close()
 
 
 def server_version(cur):
     cur.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(50)), CAST(SERVERPROPERTY('Edition') AS varchar(100))")
     r = cur.fetchone()
     return (r[0], r[1]) if r else ('', '')
+
+
+def version_family(ver_str):
+    """ProductVersion 字符串 -> (主版本号, 产品名)"""
+    try:
+        major = int(str(ver_str).split('.')[0])
+    except Exception:
+        major = None
+    return major, VERSION_NAME.get(major, '未知版本')
+
+
+# ---------------- .mdf/.ldf 自动附加 ----------------
+def _qname(name):
+    """方括号包裹标识符（转义右括号）"""
+    return '[' + str(name).replace(']', ']]') + ']'
+
+
+def _sql_str(s):
+    """生成 TSQL 单引号 Unicode 字符串字面量"""
+    return "N'" + str(s).replace("'", "''") + "'"
+
+
+def is_bas_database(cur, db_name):
+    """检查库是否含千业 Bas 核心四表，返回 (是否Bas, 缺失表列表)"""
+    need = ['BasUnitTypeInner', 'BasPtypeInner', 'BasStockInner', 'BasPersonInner']
+    cur.execute("SET NOCOUNT ON; SELECT name FROM %s.sys.tables WHERE name IN (%s)" %
+                (_qname(db_name), ','.join(_sql_str(t) for t in need)))
+    have = {r[0] for r in cur.fetchall()}
+    missing = [t for t in need if t not in have]
+    return (len(missing) == 0), missing
+
+
+def attach_database(server, user, pwd, mdf_path, ldf_path='', db_name='', timeout=15, logcb=None):
+    """
+    自动附加 .mdf/.ldf 为数据库并校验 Bas 结构。
+    mdf 必填；ldf 留空则 SQL Server 自动重建日志；db_name 留空取 mdf 文件名。
+    返回最终数据库名；各类失败抛中文 RuntimeError，可直接弹窗展示。
+    """
+    def log(m):
+        if logcb:
+            logcb(m)
+    mdf_path = os.path.abspath(mdf_path)
+    if not os.path.isfile(mdf_path):
+        raise RuntimeError('找不到主数据文件：%s' % mdf_path)
+    if ldf_path:
+        ldf_path = os.path.abspath(ldf_path)
+        if not os.path.isfile(ldf_path):
+            raise RuntimeError('指定的日志文件不存在：%s' % ldf_path)
+    if not db_name:
+        db_name = os.path.splitext(os.path.basename(mdf_path))[0]
+    cn = connect(server, 'master', user, pwd, timeout)
+    try:
+        cur = cn.cursor()
+        cur.execute("SET NOCOUNT ON; SELECT DB_ID(?)", db_name)
+        if cur.fetchone()[0] is not None:
+            raise RuntimeError('数据库名「%s」已存在，请换一个名称或直接使用现有库' % db_name)
+        cur.execute("SET NOCOUNT ON; SELECT TOP 1 DB_NAME(database_id) FROM master.sys.master_files WHERE physical_name=?", mdf_path)
+        row = cur.fetchone()
+        if row:
+            raise RuntimeError('该文件已被数据库「%s」占用，请先分离或改用现有库' % row[0])
+        files = [_sql_str(mdf_path)]
+        if ldf_path:
+            files.append(_sql_str(ldf_path))
+        ddl = "CREATE DATABASE %s ON " % _qname(db_name) + \
+              ", ".join("(FILENAME=%s)" % f for f in files) + " FOR ATTACH"
+        log('正在附加 %s ...' % db_name)
+        try:
+            cur.execute(ddl)
+        except Exception as e:
+            msg = str(e)
+            low = msg.lower()
+            if '5170' in msg or '5172' in msg or '版本' in msg or 'version' in low:
+                raise RuntimeError('附加失败：文件版本高于当前 SQL Server 实例（高版本库不能挂到低版本实例）。原始信息：%s' % msg)
+            if '5120' in msg or '5123' in msg or '拒绝访问' in msg or 'used by' in low or 'lock' in low:
+                raise RuntimeError('附加失败：文件被占用或无访问权限，请关闭千业软件/解除文件锁后重试。原始信息：%s' % msg)
+            raise RuntimeError('附加失败：%s' % msg)
+        is_bas, missing = is_bas_database(cur, db_name)
+        if not is_bas:
+            raise RuntimeError('数据库「%s」已附加，但不是千业商贸通 Bas 结构（缺少：%s），无法按 Bas 流程导入' %
+                               (db_name, '、'.join(missing)))
+        log('附加成功且确认为千业 Bas 结构：%s' % db_name)
+        return db_name
+    finally:
+        cn.close()
+
+
+def detach_database(server, user, pwd, db_name, timeout=15):
+    """分离数据库（测试/清理用，强制断开活动连接）"""
+    cn = connect(server, 'master', user, pwd, timeout)
+    try:
+        cur = cn.cursor()
+        cur.execute("ALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE" % _qname(db_name))
+        cur.execute("EXEC master.dbo.sp_detach_db %s" % _sql_str(db_name))
+        return True
+    finally:
+        cn.close()
 
 
 def check_account(cur):
@@ -137,7 +300,15 @@ def backup_tables(cur):
 
 
 def rollback_tables(cur, pre):
-    """从备份恢复（先清当前表再插回；排除 identity 列由目标自增，显式事务保证原子性）"""
+    """从备份恢复（先清当前表再插回；排除 identity 列由目标自增，显式事务保证原子性）。
+    回滚前先预检所有备份表存在，任一缺失即中止，绝不进入半回滚状态。"""
+    missing = []
+    for t in BAK_TABLES:
+        cur.execute("SET NOCOUNT ON; SELECT OBJECT_ID('dbo.%s%s')" % (t, pre))
+        if cur.fetchone()[0] is None:
+            missing.append(t)
+    if missing:
+        raise RuntimeError('备份不完整，缺少表：%s；已中止回滚（当前数据未改动）' % '、'.join(missing))
     cur.execute("SET NOCOUNT ON; BEGIN TRAN")
     try:
         for t in BAK_TABLES:
@@ -163,6 +334,39 @@ END""" % (t, pre, t, t, collist, collist, t, pre))
         raise
 
 
+def list_backup_prefixes(cur):
+    """枚举库内所有备份前缀（_impbak_14位时间戳），按时间倒序（最新在前）"""
+    cur.execute("SET NOCOUNT ON; SELECT name FROM sys.tables WHERE name LIKE '%[_]impbak[_]%'")
+    pres = set()
+    for (name,) in cur.fetchall():
+        m = re.search(r'(_impbak_\d{14})', name)
+        if m:
+            pres.add(m.group(1))
+    return sorted(pres, reverse=True)
+
+
+def latest_backup_prefix(cur):
+    """最近一次备份前缀（无备份返回 None），供 GUI 一键回滚免手填"""
+    ps = list_backup_prefixes(cur)
+    return ps[0] if ps else None
+
+
+def verify_backup(cur, pre):
+    """校验备份完整性：每张 BAK_TABLES 的备份表是否存在、备份行数与当前行数。
+    返回 (全部存在 bool, [(表, 状态, 备份行数, 当前行数)])"""
+    detail, all_exist = [], True
+    for t in BAK_TABLES:
+        cur.execute("SET NOCOUNT ON; SELECT OBJECT_ID('dbo.%s%s')" % (t, pre))
+        if cur.fetchone()[0] is None:
+            detail.append((t, '备份缺失', 0, 0)); all_exist = False; continue
+        cur.execute("SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.%s%s" % (t, pre))
+        bn = cur.fetchone()[0]
+        cur.execute("SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.%s" % t)
+        cn = cur.fetchone()[0]
+        detail.append((t, '一致' if bn == cn else '行数已变(可正常回滚)', bn, cn))
+    return all_exist, detail
+
+
 def clear_localdata(database):
     """清管家婆客户端缓存 localData/<账套>-00000-*"""
     d = os.path.join(INSTALL_DIR, 'Data', 'localData')
@@ -181,6 +385,16 @@ def clear_localdata(database):
 
 
 # ---------------- Excel 读取 ----------------
+# 模块级安全导入：xlrd 仅用于 .xls；缺失时不影响 .xlsx（openpyxl 独立工作）。
+# 放在 try 中且为顶层语句，PyInstaller 静态分析仍可识别并收集 xlrd。
+try:
+    import xlrd
+    HAS_XLRD = True
+except ImportError:
+    xlrd = None
+    HAS_XLRD = False
+
+
 def _norm(s):
     """表头归一：去空格/全半角/小写"""
     if s is None:
@@ -190,11 +404,16 @@ def _norm(s):
 
 
 def read_excel(path):
-    """读取 Excel，返回 {sheet名: [{'列名': 值}, ...]}（自动跳过头部说明行）"""
+    """读取 Excel，返回 {sheet名: (表头, [行dict])}（自动跳过头部说明行）。
+    .xls 走 xlrd（缺失给友好提示）；.xlsx/.xlsm 走 openpyxl，不依赖 xlrd。"""
     ext = os.path.splitext(path)[1].lower()
     sheets = {}
     if ext == '.xls':
-        import xlrd
+        if not HAS_XLRD:
+            raise RuntimeError(
+                '读取旧版 .xls 需要 xlrd 组件，但当前环境缺失。请任选：\n'
+                '① 用 Excel/WPS 打开该文件，“另存为” .xlsx 格式后重新选择；\n'
+                '② 使用本工具完整安装版（已内置 xlrd）。')
         wb = xlrd.open_workbook(path)
         for sh in wb.sheets():
             rows = []
@@ -315,8 +534,8 @@ EXEC @rc = dbo.p_hh_BascInsertP_Commodity @Parid=?,@FullName=?,@UserCode=?,@Name
 SELECT @rc,@rt,@err;""",
         parid, fullname, usercode, name, namepy, typ, standard, area, costmode, ptypetype,
         pooldisc, btypecode, ppcode, isweight, lifeday, comment, unit, ucode, saleprice, pre1,
-        pre2, pre3, sendprice, buydiscprice, lowsaleprice, unit1, unitrate1, ucode1, u1saleprice,
-        u1pre1, u1pre2, u1pre3, unit2, unitrate2, ucode2, u2saleprice, u2pre1, u2pre2, u2pre3,
+        pre2, pre3, sendprice, buydiscprice, lowsaleprice, unit1, unitrate1, ucode1, u2saleprice,
+        u1pre1, u1pre2, u1pre3, unit2, unitrate2, ucode2, u2pre1, u2pre2, u2pre3,
         sideunit, pgmancode, snmancode, kwmancode, pgholunit, pgholunitrate, defaulttax,
         allowprice, pjobmancode, swzz, swzzday, swwg, swwgday, swww, swwwday)
     return cur.fetchone()
@@ -447,10 +666,10 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                                _v(row, '预设售价1'), _v(row, '预设售价2'), _v(row, '预设售价3'),
                                _v(row, '配送价'), _v(row, '最近折后进价'), _v(row, '最低售价'),
                                _v(row, '辅助单位1'), _v(row, '辅1换算关系'), _v(row, '辅1条码'),
-                               _v(row, '辅1零售价'), _v(row, '辅1预设售价1'), _v(row, '辅1预设售价2'),
-                               _v(row, '辅1预设售价3'), _v(row, '辅助单位2'), _v(row, '辅2换算关系'),
-                               _v(row, '辅2条码'), _v(row, '辅2零售价'), _v(row, '辅2预设售价1'),
-                               _v(row, '辅2预设售价2'), _v(row, '辅2预设售价3'), '', '', '', '',
+                               _v(row, '辅1预设售价1'), _v(row, '辅1预设售价2'), _v(row, '辅1预设售价3'),
+                               _v(row, '辅助单位2'), _v(row, '辅2换算关系'), _v(row, '辅2条码'),
+                               _v(row, '辅2预设售价1'), _v(row, '辅2预设售价2'), _v(row, '辅2预设售价3'),
+                               '', '', '', '',
                                _v(row, '口味管理'), '', _v(row, '默认税率'), _v(row, '前台议价'),
                                _v(row, '启用批次'), _v(row, '是否自制'), _v(row, '自制周期'),
                                _v(row, '是否外购'), _v(row, '外购周期'), '', '')
