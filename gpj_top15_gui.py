@@ -321,7 +321,7 @@ class App(tk.Tk):
         self._track(ttk.Button(row, text='生成模板', command=self.gen_tpl)).pack(side='left', padx=3)
         HelpButton(row, 'gen_tpl').pack(side='left', padx=(0, 8))
         self._track(ttk.Button(row, text='扫描识别', command=self.scan_files)).pack(side='left', padx=3)
-        HelpButton(row, 'can').pack(side='left')
+        HelpButton(row, 'scan').pack(side='left')
         self.lbl_files = ttk.Label(card, text='未选择文件', style='Muted.Card.TLabel')
         self.lbl_files.pack(anchor='w', padx=10)
         self.lst_files = tk.Listbox(card, height=3, relief='flat', bg='#F4F8FC',
@@ -427,7 +427,7 @@ class App(tk.Tk):
 
     # ---------------- 页签 4：维护工具 ----------------
     def _tab_maint(self):
-        f = ttk.Frame(self.nb)
+        f = ttk.Frame(ttk.Frame(self.nb))
         self.nb.add(f, text='维护工具')
 
         # 连接与操作融合：连接面板即操作面板，连接成功后直接在下方卡片操作，无需切换步骤
