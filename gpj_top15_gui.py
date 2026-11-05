@@ -427,7 +427,7 @@ class App(tk.Tk):
 
     # ---------------- 页签 4：维护工具 ----------------
     def _tab_maint(self):
-        f = ttk.Frame(ttk.Frame(self.nb))
+        f = ttk.Frame(self.nb)
         self.nb.add(f, text='维护工具')
 
         # 连接与操作融合：连接面板即操作面板，连接成功后直接在下方卡片操作，无需切换步骤
@@ -747,7 +747,7 @@ class App(tk.Tk):
                     self.log('INFO' if x == y else 'WARN', '对比', 0,
                              '%s %s：%d → %d %s' % (mark, t, x, y, mark))
                 except Exception as e:
-                    self.log('WARN', '对比', 0, '%s 跳过：%s' % (t, e))
+                    self.log('WARN', '对比', 0, '%s 跳过：%s' % t, e)
             try:
                 sc.execute("SELECT BaseNo FROM dbo.BasPtypeInner")
                 sx = set(r[0] for r in sc.fetchall())
