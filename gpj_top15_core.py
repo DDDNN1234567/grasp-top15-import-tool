@@ -515,7 +515,7 @@ def call_goods(cur, parid, fullname, usercode, name='', namepy='', typ='', stand
                costmode='', ptypetype='', pooldisc='', btypecode='', ppcode='', isweight='',
                lifeday='', comment='', unit='', ucode='', saleprice='', pre1='', pre2='', pre3='',
                sendprice='', buydiscprice='', lowsaleprice='', unit1='', unitrate1='', ucode1='',
-               u1saleprice='', u1pre1='', u1pre2='', u1pre3', unit2='', unitrate2='', ucode2='',
+               u1saleprice='', u1pre1='', u1pre2='', u1pre3='', unit2='', unitrate2='', ucode2='',
                u2saleprice='', u2pre1='', u2pre2='', u2pre3='', sideunit='', pgmancode='',
                snmancode='', kwmancode='', pgholunit='', pgholunitrate='', defaulttax='',
                allowprice='', pjobmancode='', swzz='', swzzday='', swwg='', swwgday='', swww='', swwwday=''):
@@ -557,7 +557,7 @@ SELECT @rc,@rt,@err;""",
 def call_stockini(cur, ptypeid, puser, ktypeid, kuser, qty, total='', jobno='', createdate='', userend=''):
     cur.execute("""
 SET NOCOUNT ON;
-DECLARE @oid int, @err varchar(250); DECLARE @rc int;
+DECLARE @oid int, @err varchar(250); @err varchar(250); DECLARE @rc int;
 EXEC @rc = dbo.p_hh_ModInitGoodsStocks_SNMng_Package @szptypeid=?,@szPUserCode=?,@szktypeid=?,
   @szKUserCode=?,@szslFullname='',@szslUserCode='',@dQty=?,@dTotal=?,@JobNumber=?,@CreateDate=?,
   @UserEndDate=?,@SideQty='',@szSnNo='',@OrderID=@oid OUTPUT,@errorValue=@err OUTPUT;
@@ -679,7 +679,7 @@ def import_sheet(cur, module, rows, logcb, resolver=None):
                                   _v(row, '职员全名'), '', _v(row, '生日'), _v(row, '职员电话'),
                                   _v(row, '职员职务'), _v(row, '职员地址'), _v(row, '最低折扣下限'),
                                   _v(row, '每单优惠限额'), _v(row, '备注'))
-                rc, out, err = r[0], r1], r[2]
+                rc, out, err = r[0], r[1], r[2]
             elif module == 'stockini':
                 r = call_stockini(cur, _v(row, '商品编号'), _v(row, '商品全名'), _v(row, '仓库编号'),
                                   _v(row, '仓库全名'), _v(row, '数量'), _v(row, '金额'),
