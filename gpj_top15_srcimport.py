@@ -455,7 +455,7 @@ FILL_SPECS = [
     ]),
 ]
 
-# 源有目标无、追加到备注的字段：(目标表, 源表, real键, id列, 备注列, [(源列, 标签)])
+# 源有目标无、追加到备注的字段：(目标表, 源表, real键, id列, 备注列, [(源列, 中文标签)])
 COMMENT_SPECS = [
     ('employee', 'BasPersonInner', 'employee', 'etypeid', 'ecomment',
      [('Sex', '性别'), ('IDCard', '身份证'), ('EducateLevel', '学历')]),
@@ -617,7 +617,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb, incremental=False):
                 return rows_all
             tbl, ucc, idk, _ = INCREMENTAL_META[module]
             exist = existing_usercodes(dst_cur, tbl, ucc)
-            new_rows, upd_rows = split_incremental(rows_all, id_key=idk, existing=exist)
+            new_rows, upd_rows = split_incremental(rows_all, idk, exist)
             nu = update_existing_rows(dst_cur, module, upd_rows)
             logcb('INFO', module, 0, '增量分流：更新 %d 行、待新增 %d 行（目标独有数据保留不删）' % (nu, len(new_rows)))
             return new_rows
@@ -667,7 +667,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb, incremental=False):
             n = append_comment_fields(src_cur, dst_cur, db, mp_by_real[spec[2]], real, spec, logcb)
             if n:
                 logcb('INFO', '补全', 0, '%s 备注追加 %d 行' % (spec[0], n))
-        # 5. 期初库存（官方过程，依赖商品/仓库已导入）
+        # 5. 期初库存（官方过程,依赖商品/仓库已导入）
         if 'stockini' in modules:
             name_p = {}
             name_k = {}
