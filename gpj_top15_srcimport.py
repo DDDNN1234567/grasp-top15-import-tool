@@ -667,7 +667,7 @@ def import_from_db(src_cur, dst_cur, db, modules, logcb, incremental=False):
             n = append_comment_fields(src_cur, dst_cur, db, mp_by_real[spec[2]], real, spec, logcb)
             if n:
                 logcb('INFO', '补全', 0, '%s 备注追加 %d 行' % (spec[0], n))
-        # 5. 期初库存（官方过程,依赖商品/仓库已导入）
+        # 5. 期初库存（官方过程，依赖商品/仓库已导入）
         if 'stockini' in modules:
             name_p = {}
             name_k = {}
